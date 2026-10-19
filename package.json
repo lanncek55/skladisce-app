@@ -1,0 +1,31 @@
+{
+  "name": "skladisce-app",
+  "version": "1.0.0",
+  "description": "Mobilna aplikacija za upravljanje z zalogo skladišča in trgovine z Bluetooth Mesh sinhronizacijo brez interneta.",
+  "main": "app.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lanncek55/skladisce-app.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/lanncek55/skladisce-app/issues"
+  },
+  "homepage": "https://github.com/lanncek55/skladisce-app#readme",
+  "dependencies": {
+    "@capacitor-mlkit/text-recognition": "^8.2.1",
+    "@capacitor/android": "^8.5.3",
+    "@capacitor/camera": "^8.2.5",
+    "@capacitor/cli": "^8.5.3",
+    "@capacitor/core": "^8.5.3",
+    "jsbarcode": "^3.12.3",
+    "qrcode": "^1.5.4",
+    "qrcode-generator": "^2.0.4"
+  }
+}

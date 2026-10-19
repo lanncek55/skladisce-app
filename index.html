@@ -1,0 +1,1186 @@
+<!DOCTYPE html>
+<html lang="sl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#0f172a">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="description" content="Mobilna offline aplikacija za vodenje skladiščne zaloge">
+  <title>Skladišče - Upravljanje z zalogo</title>
+  
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" type="image/svg+xml" href="icons/icon.svg">
+  <link rel="apple-touch-icon" href="icons/icon.svg">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- Toast Obvestilo -->
+  <div id="toast" class="toast-msg">Obvestilo</div>
+
+  <!-- Glava Aplikacije -->
+  <header class="app-header">
+    <div class="logo-area">
+      <div class="logo-icon">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
+          <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
+          <line x1="12" y1="22.08" x2="12" y2="12"></line>
+        </svg>
+      </div>
+      <div class="app-title">Skladišče</div>
+    </div>
+    <div style="display: flex; align-items: center; gap: 8px;">
+      <button class="btn-sync-header" id="btnHeaderBLESync" title="Samodejna Bluetooth BLE sinhronizacija (brez Wi-Fi)">
+        <span class="ble-dot ble-dot-ready" id="bleHeaderDot"></span>
+        <span id="btnHeaderBLESyncText">BLE Mesh</span>
+      </button>
+      <div id="connectionStatus" class="offline-pill online">
+        <span class="dot"></span>
+        <span id="connectionText">Povezano</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Glavni vsebinski deli (Tabs) -->
+  <main id="mainContainer">
+
+    <!-- ZAVIHEK 1: ZALOGA -->
+    <section id="tab-inventory" class="tab-content active">
+      <!-- Hitra statistika -->
+      <div class="stats-bar">
+        <div class="stat-card">
+          <div class="stat-label">Artiklov</div>
+          <div class="stat-val" id="statTotalItems">0</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Skupaj kos</div>
+          <div class="stat-val" id="statTotalQty">0</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Kritično</div>
+          <div class="stat-val critical" id="statLowStock">0</div>
+        </div>
+      </div>
+
+      <!-- Hitri PDF izpisi zaloge, konsolidacija in pomoč pri izdaji -->
+      <div class="pdf-quick-bar">
+        <button type="button" class="btn-pdf-pill" id="btnOpenMixedBoxesPill" onclick="openMixedBoxesModal()" style="border-color: #38bdf8; color: #38bdf8; background: rgba(56, 189, 248, 0.12);" title="Pregled in pakiranje mešanih škatel">
+          📦 Mešane (<span id="mixedBoxesBadge">0</span>)
+        </button>
+        <button type="button" class="btn-pdf-pill" onclick="switchTab('tab-replenishment')" style="border-color: #10b981; color: #34d399; background: rgba(16, 185, 129, 0.12);" title="Nabiranje za police trgovine">
+          🛒 Police & Nabiranje
+        </button>
+        <button type="button" class="btn-pdf-pill" id="btnQuickPdfComplete" onclick="exportCompleteSetsPDF()" title="Prenesi PDF s popolnimi kompleti">
+          Popolni kompleti (PDF)
+        </button>
+        <button type="button" class="btn-pdf-pill warning" id="btnQuickPdfIncomplete" onclick="exportIncompleteSetsPDF()" title="Prenesi PDF z nepopolnimi škatlami">
+          Nepopolne škatle (PDF)
+        </button>
+        <button type="button" class="btn-pdf-pill" id="btnOpenConsolidation" onclick="openConsolidationModal()" style="border-color: rgba(168, 85, 247, 0.4); color: #c084fc; background: rgba(168, 85, 247, 0.12);" title="Pregled in združevanje razpršenih škatel">
+          Konsolidacija (<span id="consolidationBadge">0</span>)
+        </button>
+        <button type="button" class="btn-pdf-pill" id="btnQuickDispatch" onclick="showReceiptDispatchPicker()" style="border-color: #f59e0b; color: #fbbf24;" title="Izdaja blaga po računu">
+          Izdaja po računu
+        </button>
+      </div>
+
+      <!-- Filter po skladiščih in lokacijah -->
+      <div class="warehouse-filter-bar" id="warehouseChips" style="margin-bottom: 8px;">
+        <button class="chip active" data-wh="all">Vse lokacije</button>
+        <button class="chip" data-wh="trgovina">🏬 Prodajalna (Police)</button>
+        <button class="chip" data-wh="zgornje">📦 Zgornje skl. (Soft)</button>
+        <button class="chip" data-wh="spodnje">🛋️ Spodnje skl. (Pohištvo)</button>
+      </div>
+
+      <!-- Prevzemna pošiljka (Prejemanje robe v teku) -->
+      <div id="receivingBanner" class="receiving-session-banner" style="display: flex; justify-content: space-between; align-items: center; background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: var(--radius-sm); padding: 10px 12px; margin-bottom: 12px;">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <span class="live-pulse-dot" style="background: #10b981; width: 10px; height: 10px; border-radius: 50%; display: inline-block;"></span>
+          <div>
+            <div style="font-weight: 700; font-size: 0.88rem; color: #fff;" id="receivingBannerTitle">
+              Prevzem pošiljke
+            </div>
+            <div style="font-size: 0.74rem; color: var(--text-muted);" id="receivingBannerSub">
+              Prevzeto: 0 škatel &bull; Kompletirano: 0
+            </div>
+          </div>
+        </div>
+        <div style="display: flex; gap: 6px; align-items: center;">
+          <button type="button" class="btn-sm-action" onclick="openReceivingArchiveModal()" style="background: rgba(255, 255, 255, 0.08); color: #cbd5e1; border: 1px solid var(--border); border-radius: 6px; padding: 7px 9px; font-weight: 600; font-size: 0.75rem; cursor: pointer;" title="Arhiv preteklih prevzemov">
+            Arhiv
+          </button>
+          <button type="button" class="btn-sm-action" id="btnOpenReceivingModal" onclick="handleReceivingBannerClick()" style="background: #10b981; color: #fff; border: none; border-radius: 6px; padding: 7px 12px; font-weight: 700; font-size: 0.78rem; cursor: pointer;">
+            Pregled in zaključek
+          </button>
+        </div>
+      </div>
+
+      <!-- Iskalnik in filtri -->
+      <div class="search-container">
+        <div class="search-box">
+          <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"></circle>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+          </svg>
+          <input type="text" id="searchInput" class="search-input" placeholder="Išči artikel, kodo ali lokacijo...">
+          <button type="button" onclick="openQuickCameraScanner('search')" style="background: none; border: none; color: var(--primary); font-size: 1.15rem; cursor: pointer; padding: 0 6px;" title="Skeniraj artikel s kamero">📷</button>
+        </div>
+        <div class="filter-chips" id="categoryChips">
+          <button class="chip active" data-filter="all">Vse</button>
+          <button class="chip" data-filter="low">Nizka zaloga</button>
+        </div>
+      </div>
+
+      <!-- Seznam artiklov -->
+      <div class="items-list" id="itemsList">
+        <div class="empty-box">
+          <p>Nalaganje zaloge...</p>
+        </div>
+      </div>
+
+      <!-- Gumb za dodajanje artikla (+) -->
+      <button class="fab" id="btnOpenAddModal" title="Dodaj nov artikel">+</button>
+    </section>
+
+    <!-- ZAVIHEK 2: OPTIČNI ČITALNIK ŠKATEL (OCR) -->
+    <section id="tab-scanner" class="tab-content scanner-section">
+      <div style="text-align: center; margin-bottom: 6px;">
+        <h2 style="font-size: 1.15rem; font-weight: 700;">Skeniranje škatel</h2>
+        <p style="font-size: 0.78rem; color: var(--text-muted);">
+          Skeniranje etiket artiklov in škatel
+        </p>
+      </div>
+
+      <!-- Aktivni regal in polica (samodejno prevzeto prek QR kode ali ročno) -->
+      <div id="activeShelfIndicatorPill" onclick="promptManualShelfChange()" style="width: 100%; max-width: 420px; margin: 0 auto 8px auto; display: flex; align-items: center; justify-content: space-between; background: rgba(30, 41, 59, 0.9); border: 1px solid rgba(56, 189, 248, 0.35); border-radius: 8px; padding: 6px 12px; cursor: pointer; box-sizing: border-box;">
+        <div style="display: flex; align-items: center; gap: 8px; overflow: hidden;">
+          <span style="font-size: 1.1rem; line-height: 1;">📍</span>
+          <div style="display: flex; flex-direction: column; text-align: left; overflow: hidden;">
+            <span style="font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); font-weight: 700;">Aktivni regal / polica:</span>
+            <span id="currentActiveShelfText" style="font-size: 0.82rem; font-weight: 700; color: #38bdf8; white-space: nowrap; text-overflow: ellipsis; overflow: hidden;">Ni določen (Poskeniraj QR regala)</span>
+          </div>
+        </div>
+        <span style="font-size: 0.70rem; background: rgba(56, 189, 248, 0.15); color: #38bdf8; padding: 2px 7px; border-radius: 4px; font-weight: 700; flex-shrink: 0;">Spremeni</span>
+      </div>
+
+      <!-- Kamera z vizirjem za škatlo -->
+      <div class="camera-preview-container" onclick="triggerTapToFocus(event)">
+        <video id="cameraVideo" playsinline autoplay muted></video>
+        <canvas id="ocrPreprocessCanvas" style="display: none;"></canvas>
+        <div class="camera-status-bar" onclick="event.stopPropagation()">
+          <button id="btnToggleAutoScan" class="auto-scan-toggle active" title="Vklopi ali izklopi samodejno branje">
+            <span class="live-pulse-dot"></span>
+            <span id="autoScanStatusText">SAMODEJNO: VKLOP</span>
+          </button>
+          <div style="display: flex; align-items: center; gap: 5px;">
+            <button id="btnToggleTorch" type="button" onclick="toggleCameraTorch()" class="btn-sm" style="display:none; padding: 4px 8px; font-size: 0.72rem; background: rgba(15,23,42,0.85); border: 1px solid rgba(255,255,255,0.25); color: #fff; border-radius: 12px; cursor: pointer; font-weight: 700;">
+              🔦 Luč
+            </button>
+            <button id="btnToggleZoom" type="button" onclick="cycleCameraZoom()" class="btn-sm" style="padding: 4px 8px; font-size: 0.72rem; background: rgba(15,23,42,0.85); border: 1px solid rgba(255,255,255,0.25); color: #fff; border-radius: 12px; cursor: pointer; font-weight: 700;">
+              🔍 1x
+            </button>
+            <span id="scanLiveIndicator" class="scan-state-pill">Pripravljeno</span>
+          </div>
+        </div>
+        <div class="scanner-overlay">
+          <div class="scan-frame box-frame" id="scanFrameBox">
+            <div class="scan-laser-line" id="scanLaserLine"></div>
+            <div class="frame-corner top-left"></div>
+            <div class="frame-corner top-right"></div>
+            <div class="frame-corner bottom-left"></div>
+            <div class="frame-corner bottom-right"></div>
+            <div class="frame-label" id="frameLabelText">Usmeri kamero v etiketo</div>
+          </div>
+        </div>
+        <!-- Nalagalnik obdelave -->
+        <div id="ocrLoadingOverlay" class="ocr-loading-overlay" style="display: none;">
+          <div class="spinner"></div>
+          <div id="ocrLoadingText" style="font-weight: 600; font-size: 0.9rem; margin-top: 10px;">
+            Obdelava slike...
+          </div>
+        </div>
+      </div>
+
+      <!-- Glavni kontrolni gumbi -->
+      <div style="width: 100%; max-width: 420px; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; margin: 2px 0;">
+        <button class="btn-secondary" id="btnCaptureOCR" style="margin:0; font-size: 0.78rem; padding: 7px 4px; text-align: center; border-color: rgba(56, 189, 248, 0.4); color: var(--primary);">
+          Ročni zajem
+        </button>
+        <button class="btn-secondary" id="btnTriggerCameraPhoto" style="margin:0; font-size: 0.78rem; padding: 7px 4px; text-align: center;">
+          Galerija
+        </button>
+        <button class="btn-primary" id="btnReceiptDispatchTrigger" style="margin:0; background: linear-gradient(135deg, #f59e0b, #d97706); border-color: #d97706; color: #fff; font-weight: 700; font-size: 0.78rem; padding: 7px 4px; text-align: center;">
+          Izdaja račun
+        </button>
+        <input type="file" id="ocrFileInput" accept="image/*" capture="environment" style="display: none;">
+      </div>
+
+      <!-- Kartica z rezultatom prepoznane škatle -->
+      <div id="scanResultCard" style="display: none; width: 100%; max-width: 420px;" class="box-result-card">
+        <!-- Dinamično napolnjeno z ocr-parser -->
+      </div>
+
+      <!-- Ročni vnos / iskanje po 7-mestni kodi, če je škatla poškodovana -->
+      <div style="width: 100%; max-width: 420px; background: var(--bg-card); padding: 14px; border-radius: var(--radius-md); border: 1px solid var(--border); margin-top: 4px;">
+        <label class="form-label">Ročni vnos 7-mestne šifre artikla (npr. 3725150):</label>
+        <div style="display: flex; gap: 8px;">
+          <input type="number" id="manualScanInput" class="form-control" placeholder="Vpiši 7 števk...">
+          <button class="btn-primary" id="btnManualScan" style="margin-top: 0; width: auto; padding: 0 16px;">Najdi</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ZAVIHEK: POLICE & NABIRANJE (REPLENISHMENT) -->
+    <section id="tab-replenishment" class="tab-content" style="display: none; padding: 16px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; gap: 8px;">
+        <div>
+          <h2 style="font-size: 1.15rem; margin-bottom: 2px;">Police & Nabiranje</h2>
+          <div style="font-size: 0.78rem; color: var(--text-muted);">
+            Dopolnjevanje prodajnih polic iz skladišča
+          </div>
+        </div>
+        <button type="button" class="btn-pdf-pill" onclick="openMixedBoxesModal()" style="border-color: #38bdf8; color: #38bdf8; background: rgba(56, 189, 248, 0.12);" title="Pregled mešanih škatel">
+          📦 Mešane škatle (<span id="repMixedBoxesCount">0</span>)
+        </button>
+      </div>
+
+      <!-- Hitra preverba police / cenovke -->
+      <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 14px; margin-bottom: 14px;">
+        <div style="font-weight: 700; font-size: 0.88rem; margin-bottom: 8px; color: #fff; display: flex; align-items: center; justify-content: space-between;">
+          <span>Preveri polico / cenovko</span>
+          <span style="font-size: 0.72rem; color: var(--primary);">7-mestna šifra</span>
+        </div>
+        <div style="display: flex; gap: 8px; margin-bottom: 10px;">
+          <input type="text" id="repScanInput" class="form-control" placeholder="Skeniraj ali vpiši šifro..." style="font-size: 0.95rem; font-weight: 600;">
+          <button type="button" class="btn-primary" onclick="openQuickCameraScanner('rep')" style="margin: 0; width: auto; padding: 0 14px; background: linear-gradient(135deg, #0284c7, #0369a1); font-weight: 700; display: flex; align-items: center; gap: 5px; white-space: nowrap;" title="Skeniraj cenovko / artikel s kamero">
+            📷 Skeniraj
+          </button>
+          <button type="button" class="btn-secondary" id="btnRepLookup" style="margin: 0; width: auto; padding: 0 12px; white-space: nowrap;">Išči</button>
+        </div>
+
+        <!-- Kartica prepoznanega artikla za dodajanje na seznam -->
+        <div id="repHitCard" style="display: none; background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(56, 189, 248, 0.3); border-radius: var(--radius-sm); padding: 12px;">
+          <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 6px;">
+            <div>
+              <div style="font-weight: 700; font-size: 0.95rem; color: #fff;" id="repHitName">-</div>
+              <div style="font-size: 0.76rem; color: var(--primary); font-family: monospace;" id="repHitSku"># -</div>
+            </div>
+            <span class="stock-status-badge status-ok" id="repHitStockBadge">Na voljo</span>
+          </div>
+
+          <!-- Stanje zaloge po skladiščih -->
+          <div style="font-size: 0.78rem; color: var(--text-muted); margin-bottom: 10px; display: flex; flex-direction: column; gap: 3px;" id="repHitLocations">
+            <!-- Dinamično -->
+          </div>
+
+          <!-- Vnos stanja na polici -->
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; background: rgba(0, 0, 0, 0.2); padding: 8px; border-radius: 6px;">
+            <div>
+              <label style="font-size: 0.72rem; color: var(--text-muted); display: block; margin-bottom: 3px;">Kapaciteta police:</label>
+              <input type="number" min="1" id="repHitCapacity" class="form-control" style="padding: 6px 8px; font-weight: 700; font-size: 0.9rem;" value="10">
+            </div>
+            <div>
+              <label style="font-size: 0.72rem; color: var(--text-muted); display: block; margin-bottom: 3px;">Trenutno na polici:</label>
+              <input type="number" min="0" id="repHitCurrent" class="form-control" style="padding: 6px 8px; font-weight: 700; font-size: 0.9rem;" value="0">
+            </div>
+          </div>
+
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; padding: 6px 8px; background: rgba(245, 158, 11, 0.1); border-radius: 6px;">
+            <span style="font-size: 0.8rem; color: #fbbf24; font-weight: 600;">Potrebno prinesti:</span>
+            <span style="font-size: 1.1rem; font-weight: 800; color: #fbbf24;" id="repHitNeeded">0 kos</span>
+          </div>
+
+          <button type="button" class="btn-primary" id="btnRepAddToList" style="margin: 0; background: linear-gradient(135deg, #38bdf8, #0284c7); font-weight: 700;">
+            + Dodaj na nabiralni seznam
+          </button>
+        </div>
+      </div>
+
+      <!-- Nabiralni seznam za skladiščnika / prodajalca -->
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+        <h3 style="font-size: 1rem; color: #fff; display: flex; align-items: center; gap: 6px;">
+          <span>Nabiralni seznam</span>
+          <span class="item-sku-badge" id="repListCountBadge">0</span>
+        </h3>
+        <div style="display: flex; gap: 6px;">
+          <button type="button" class="btn-sm-action" onclick="exportReplenishmentPDF()" style="background: rgba(56, 189, 248, 0.15); border: 1px solid rgba(56, 189, 248, 0.35); color: #38bdf8; border-radius: 6px; padding: 5px 8px; font-size: 0.75rem; font-weight: 700; cursor: pointer;">
+            🖨️ PDF nalog
+          </button>
+          <button type="button" class="btn-sm-action" onclick="clearCompletedReplenishments()" style="background: rgba(255, 255, 255, 0.06); border: 1px solid var(--border); color: var(--text-muted); border-radius: 6px; padding: 5px 8px; font-size: 0.75rem; cursor: pointer;">
+            Počisti
+          </button>
+        </div>
+      </div>
+
+      <!-- Filter seznama po skladišču -->
+      <div class="warehouse-filter-bar" id="repWhFilterChips" style="margin-bottom: 10px;">
+        <button class="chip active" data-rep-filter="all">Vse lokacije</button>
+        <button class="chip" data-rep-filter="zgornje">Zgornje skladišče</button>
+        <button class="chip" data-rep-filter="spodnje">Spodnje skladišče</button>
+      </div>
+
+      <!-- Kartice nalog za nabiranje -->
+      <div id="replenishmentItemsList" style="display: flex; flex-direction: column; gap: 10px; margin-bottom: 80px;">
+        <!-- Dinamične kartice -->
+      </div>
+    </section>
+
+    <!-- ZAVIHEK 3: INVENTURNI POPIS (AUDIT) -->
+    <section id="tab-audit" class="tab-content" style="display: none; padding: 16px;">
+      <!-- Naslov z orodno vrstico -->
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; gap: 8px;">
+        <div>
+          <h2 style="font-size: 1.15rem; margin-bottom: 2px;">Inventura zaloge</h2>
+          <div style="font-size: 0.78rem; color: var(--text-muted);">Popis stanja, primerjava in uskladitev</div>
+        </div>
+        <button class="chip" id="btnResetAuditSession" title="Začni nov popis iz trenutne zaloge" style="display: flex; align-items: center; gap: 4px; border-color: rgba(239, 68, 68, 0.4); color: #f87171;">
+          Ponastavi popis
+        </button>
+      </div>
+
+      <!-- Hitra statistika popisa -->
+      <div class="audit-stats-grid">
+        <div class="audit-stat-card">
+          <div class="audit-stat-label">Pozicij</div>
+          <div class="audit-stat-val" id="auditStatTotal">0</div>
+        </div>
+        <div class="audit-stat-card">
+          <div class="audit-stat-label">Prešteto</div>
+          <div class="audit-stat-val" id="auditStatCounted">0</div>
+        </div>
+        <div class="audit-stat-card">
+          <div class="audit-stat-label">Usklajeno</div>
+          <div class="audit-stat-val success" id="auditStatMatch">0</div>
+        </div>
+        <div class="audit-stat-card">
+          <div class="audit-stat-label">Odstopanja</div>
+          <div class="audit-stat-val warning" id="auditStatDiff">0</div>
+        </div>
+      </div>
+
+      <!-- Filtri in izbira regala -->
+      <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 12px; margin-bottom: 12px; display: flex; flex-direction: column; gap: 10px;">
+        <div style="display: flex; gap: 8px; align-items: center;">
+          <label style="font-size: 0.8rem; font-weight: 600; color: var(--text-muted); min-width: 65px;">Regal:</label>
+          <select id="auditShelfFilter" class="form-control" style="padding: 8px 12px; font-weight: 600; font-size: 0.9rem;">
+            <option value="all">Vsi regali</option>
+          </select>
+        </div>
+
+        <div style="display: flex; gap: 8px;">
+          <input type="text" id="auditScanInput" class="form-control" placeholder="Skeniraj ali vpiši 7-mestno šifro..." style="padding: 9px 12px; font-size: 0.9rem;">
+          <button type="button" class="btn-primary" onclick="openQuickCameraScanner('audit')" style="margin: 0; width: auto; padding: 0 14px; background: linear-gradient(135deg, #0284c7, #0369a1); font-weight: 700; display: flex; align-items: center; gap: 5px; white-space: nowrap;" title="Skeniraj škatlo s kamero za štetje">
+            📷 Skeniraj
+          </button>
+          <button class="btn-primary" id="btnAuditQuickCount" style="margin: 0; width: auto; padding: 0 14px; white-space: nowrap; font-size: 0.85rem;" title="Dodaj +1 kos">Štej (+1)</button>
+        </div>
+
+        <!-- Filter statusa -->
+        <div id="auditFilterChips" style="display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px;">
+          <button class="chip active" data-audit-filter="all">Vse postavke</button>
+          <button class="chip" data-audit-filter="diff">Samo odstopanja</button>
+          <button class="chip" data-audit-filter="uncounted">Neprešteto</button>
+          <button class="chip" data-audit-filter="match">Usklajeno</button>
+        </div>
+      </div>
+
+      <!-- Seznam postavk za štetje -->
+      <div id="auditItemsList" style="display: flex; flex-direction: column; gap: 10px; margin-bottom: 80px;">
+        <!-- Dinamične inventurne kartice -->
+      </div>
+
+      <!-- Pripeta spodnja vrstica z akcijami -->
+      <div class="audit-action-bar">
+        <button class="btn-secondary" id="btnExportAuditPDF" style="margin: 0; flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; font-size: 0.88rem; padding: 12px;">
+          PDF zapisnik
+        </button>
+        <button class="btn-primary" id="btnApplyAudit" style="margin: 0; flex: 1.3; background: linear-gradient(135deg, #10b981, #059669); border-color: #10b981; display: flex; align-items: center; justify-content: center; gap: 6px; font-size: 0.88rem; padding: 12px;">
+          Potrdi in uskladi zalogo
+        </button>
+      </div>
+    </section>
+
+    <!-- ZAVIHEK 4: DNEVNIK PREMIKOV -->
+    <section id="tab-history" class="tab-content" style="display: none; padding: 16px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
+        <h2 style="font-size: 1.1rem;">Zgodovina premikov</h2>
+        <button class="chip" id="btnClearLogs">Počisti zgodovino</button>
+      </div>
+      <div id="logsList" style="display: flex; flex-direction: column; gap: 10px;">
+        <!-- Dinamični zapisi premikov -->
+      </div>
+    </section>
+
+    <!-- ZAVIHEK 5: NASTAVITVE & PODATKI -->
+    <section id="tab-settings" class="tab-content" style="display: none; padding: 16px;">
+      <h2 style="font-size: 1.1rem; margin-bottom: 14px;">Podatki in nastavitve</h2>
+
+      <!-- Brezžična BLE sinhronizacija -->
+      <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 16px; margin-bottom: 16px;">
+        <h3 style="font-size: 0.95rem; margin: 0 0 6px 0; color: #fff;">Bluetooth sinhronizacija</h3>
+        <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 12px; line-height: 1.4;">
+          Neposredna uskladitev zaloge med napravama prek Bluetooth povezave.
+        </p>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+          <button class="btn-primary" id="btnOpenBLESend" style="margin: 0; padding: 11px; font-weight: 600; font-size: 0.86rem;">
+            Pošlji zalogo
+          </button>
+          <button class="btn-secondary" id="btnOpenBLEReceive" style="margin: 0; padding: 11px; font-weight: 600; font-size: 0.86rem; border-color: rgba(56, 189, 248, 0.5); color: #38bdf8;">
+            Prejmi zalogo
+          </button>
+        </div>
+      </div>
+
+      <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 16px; margin-bottom: 14px;">
+        <h3 style="font-size: 0.95rem; margin-bottom: 6px;">Poročila in izvoz podatkov</h3>
+        <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 12px;">
+          Izpis skladiščnih poročil v PDF formatu, izvoz v CSV ter varnostna kopija baze.
+        </p>
+        <div style="display: flex; flex-direction: column; gap: 8px;">
+          <button type="button" class="btn-secondary" id="btnPdfComplete" onclick="exportCompleteSetsPDF()" style="margin-top:0; border-color: rgba(56, 189, 248, 0.4); color: var(--primary); text-align: left; padding: 12px;">
+            Popolni kompleti (PDF)
+          </button>
+          <button type="button" class="btn-secondary" id="btnPdfIncomplete" onclick="exportIncompleteSetsPDF()" style="margin-top:0; border-color: rgba(245, 158, 11, 0.4); color: var(--warning); text-align: left; padding: 12px;">
+            Nepopolne škatle (PDF)
+          </button>
+          <button type="button" class="btn-secondary" onclick="openConsolidationModal()" style="margin-top:0; border-color: rgba(168, 85, 247, 0.4); color: #c084fc; text-align: left; padding: 12px;">
+            Konsolidacija zaloge po regalih
+          </button>
+          <button type="button" class="btn-secondary" onclick="openReceivingArchiveModal()" style="margin-top:0; border-color: rgba(16, 185, 129, 0.4); color: #34d399; text-align: left; padding: 12px;">
+            Arhiv preteklih prevzemov
+          </button>
+          <button type="button" class="btn-secondary" id="btnExportCSV" style="margin-top:0; text-align: left; padding: 12px;">
+            Izvoz zaloge v CSV (Excel)
+          </button>
+          <button type="button" class="btn-secondary" id="btnExportJSON" style="margin-top:0; text-align: left; padding: 12px;">
+            Varnostna kopija podatkov (JSON)
+          </button>
+        </div>
+      </div>
+
+      <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 16px; margin-bottom: 14px;">
+        <h3 style="font-size: 0.95rem; margin-bottom: 6px;">Uvoz podatkov</h3>
+        <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 12px;">
+          Obnovitev podatkov iz varnostne kopije JSON.
+        </p>
+        <input type="file" id="importFileInput" accept=".json" style="display: none;">
+        <button class="btn-secondary" id="btnTriggerImport" style="margin-top:0;">Uvozi varnostno kopijo (JSON)</button>
+      </div>
+
+      <!-- Upravljanje skladišč in prodajalne -->
+      <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 16px; margin-bottom: 14px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+          <h3 style="font-size: 0.95rem; margin: 0; color: #fff;">Skladišča in prodajalna</h3>
+          <span class="item-sku-badge" id="settingsWhCountBadge">3 lokacije</span>
+        </div>
+        <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 12px; line-height: 1.4;">
+          Pregled in dodajanje lokacij zaloge (Prodajalna, Zgornje skladišče - soft, Spodnje skladišče - pohištvo ter dodatna skladišča).
+        </p>
+        <div id="settingsWarehousesList" style="display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px;">
+          <!-- Dinamično naloženo iz DB -->
+        </div>
+        <div style="display: flex; gap: 6px;">
+          <input type="text" id="newWhNameInput" class="form-control" placeholder="Ime novega skladišča..." style="font-size: 0.85rem;">
+          <button type="button" class="btn-primary" onclick="addNewWarehouseFromSettings()" style="margin: 0; width: auto; padding: 0 14px; font-size: 0.8rem; white-space: nowrap;">+ Dodaj</button>
+        </div>
+      </div>
+
+      <!-- QR Nalepke za regale in police -->
+      <div style="background: var(--bg-card); border: 1px solid rgba(56, 189, 248, 0.35); border-radius: var(--radius-md); padding: 16px; margin-bottom: 14px;">
+        <h3 style="font-size: 0.95rem; margin-bottom: 6px; color: #38bdf8;">QR nalepke za regale in police (PDF)</h3>
+        <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 12px; line-height: 1.4;">
+          Ustvari PDF z natisnimi QR nalepkami za vseh 48 lokacij (dvostranski regali R1 do R6 s policami P1–P3 ter stenski regali SZ, SS, SL1, SL2). Pripravljeno za tisk in lepljenje na police za 1-sekundno izbiro regala s kamero.
+        </p>
+        <button class="btn-primary" onclick="exportWarehouseShelfQRPDF()" style="margin-top:0; background: linear-gradient(135deg, #0284c7, #0369a1); border: none; font-weight: 700;">
+          📄 Natisni / Prenesi QR nalepke za police (PDF)
+        </button>
+      </div>
+
+      <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 16px; margin-bottom: 14px;">
+        <h3 style="font-size: 0.95rem; margin-bottom: 6px;">Združevanje dvojnikov</h3>
+        <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 12px;">
+          Združi podvojene zapise z enako šifro artikla (SKU) in ohrani lokacije po regalih.
+        </p>
+        <button class="btn-secondary" id="btnDeduplicate" style="margin-top:0; border-color: rgba(56, 189, 248, 0.4); color: #38bdf8;">
+          Združi podvojene artikle
+        </button>
+      </div>
+
+      <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 16px; margin-bottom: 14px;">
+        <h3 style="font-size: 0.95rem; margin-bottom: 6px;">Testni podatki</h3>
+        <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 12px;">
+          Naloži vzorčne artikle v bazo.
+        </p>
+        <button class="btn-secondary" id="btnLoadDemo">Naloži vzorčne artikle</button>
+      </div>
+
+      <!-- Izbris vseh artiklov -->
+      <div style="background: rgba(239, 68, 68, 0.08); border: 1px solid rgba(239, 68, 68, 0.35); border-radius: var(--radius-md); padding: 16px; margin-bottom: 14px;">
+        <h3 style="font-size: 0.95rem; margin-bottom: 6px; color: #ef4444;">
+          Izbris celotne zaloge
+        </h3>
+        <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 12px; line-height: 1.4;">
+          Odstrani vse artikle in zaloge po regalih iz baze.
+        </p>
+        <button type="button" class="btn-secondary" id="btnClearAllItems" style="margin-top:0; border-color: rgba(239, 68, 68, 0.6); color: #ef4444; background: rgba(239, 68, 68, 0.1); font-weight: 600;">
+          Izbriši vse artikle
+        </button>
+      </div>
+
+      <div style="font-size: 0.75rem; color: var(--text-dim); text-align: center; margin-top: 24px;">
+        Skladišče v1.2
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Spodnja navigacijska vrstica -->
+  <nav class="bottom-nav">
+    <button class="nav-tab active" data-tab="tab-inventory">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
+        <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
+        <line x1="12" y1="22.08" x2="12" y2="12"></line>
+      </svg>
+      <span>Zaloga</span>
+    </button>
+    <button class="nav-tab" data-tab="tab-replenishment">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"></path>
+        <line x1="3" y1="6" x2="21" y2="6"></line>
+        <path d="M16 10a4 4 0 0 1-8 0"></path>
+      </svg>
+      <span>Police</span>
+    </button>
+    <button class="nav-tab" data-tab="tab-scanner">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
+        <polyline points="7.5 4.21 12 6.81 16.5 4.21"></polyline>
+        <polyline points="7.5 19.79 7.5 14.6 3 12"></polyline>
+        <polyline points="21 12 16.5 14.6 16.5 19.79"></polyline>
+        <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
+        <line x1="12" y1="22.08" x2="12" y2="12"></line>
+      </svg>
+      <span>Škatle</span>
+    </button>
+    <button class="nav-tab" data-tab="tab-audit">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M9 11l3 3L22 4"></path>
+        <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path>
+      </svg>
+      <span>Inventura</span>
+    </button>
+    <button class="nav-tab" data-tab="tab-history">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="10"></circle>
+        <polyline points="12 6 12 12 16 14"></polyline>
+      </svg>
+      <span>Premiki</span>
+    </button>
+    <button class="nav-tab" data-tab="tab-settings">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="3"></circle>
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+      </svg>
+      <span>Nastavitve</span>
+    </button>
+  </nav>
+
+  <!-- MODAL: DODAJ / UREDI ARTIKEL -->
+  <div class="modal-backdrop" id="modalItem">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3 class="modal-title" id="modalItemTitle">Nov artikel</h3>
+        <button class="btn-close" id="btnCloseItemModal">&times;</button>
+      </div>
+      <form id="formItem">
+        <input type="hidden" id="itemId">
+        
+        <div class="form-group">
+          <label class="form-label" for="itemSku">Številka artikla (prvih 7 števk) *</label>
+          <div style="display: flex; gap: 8px;">
+            <input type="text" id="itemSku" class="form-control" placeholder="npr. 3725150 ali 3651003" required>
+            <button type="button" class="btn-secondary" id="btnGenSku" style="margin-top:0; width:auto; padding: 0 12px; font-size: 0.8rem;" title="Ustvari avtomatsko šifro">Generiraj</button>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="itemName">Naziv artikla *</label>
+          <input type="text" id="itemName" class="form-control" placeholder="npr. Garden chair FJELLERUP" required>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label" for="itemBoxInfo">Oznaka škatle (npr. Box 1/1 ali Box 1/2)</label>
+            <input type="text" id="itemBoxInfo" class="form-control" placeholder="Box 1/1" value="Box 1/1">
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="itemBoxTotal">Skupaj škatel na garnituro</label>
+            <input type="number" id="itemBoxTotal" class="form-control" placeholder="1" value="1" min="1">
+          </div>
+        </div>
+
+        <!-- Dinamične lokacije posameznih škatel -->
+        <div id="modalBoxLocationsContainer" style="display: none; background: rgba(0,0,0,0.25); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px; margin-bottom: 14px;">
+          <div style="font-size: 0.82rem; font-weight: 700; color: var(--primary); margin-bottom: 8px;">
+            Lokacije in število posameznih škatel:
+          </div>
+          <div id="modalBoxRows" style="display: flex; flex-direction: column; gap: 8px;"></div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label" for="itemCategory">Kategorija</label>
+            <input type="text" id="itemCategory" class="form-control" placeholder="npr. Pohištvo" list="catSuggestions">
+            <datalist id="catSuggestions">
+              <option value="Vrtno pohištvo">
+              <option value="Stoli & Mize">
+              <option value="Tekstil & Posteljnina">
+              <option value="Oblazinjeno pohištvo">
+              <option value="Ogledala & Dekor">
+              <option value="Omarice & Mizice">
+              <option value="Embalaža">
+            </datalist>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="itemLocation">Lokacija v skladišču</label>
+            <input type="text" id="itemLocation" class="form-control" placeholder="npr. Regal A-01">
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label" for="itemShelfCapacity">Kapaciteta police v trgovini (kos)</label>
+            <input type="number" min="0" id="itemShelfCapacity" class="form-control" placeholder="npr. 12">
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="itemShelfLocation">Lokacija police v trgovini</label>
+            <input type="text" id="itemShelfLocation" class="form-control" placeholder="npr. Polica T-05">
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label" for="itemCategoryType">Vrsta artikla (Skladiščenje)</label>
+            <select id="itemCategoryType" class="form-control">
+              <option value="soft" selected>Soft / Tekstil (Zgornje skl. / Mešane škatle)</option>
+              <option value="furniture">Pohištvo / Večdelno (Spodnje skladišče)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="itemPrimaryWarehouse">Privzeto skladišče</label>
+            <select id="itemPrimaryWarehouse" class="form-control">
+              <option value="zgornje" selected>Zgornje skladišče (Soft)</option>
+              <option value="spodnje">Spodnje skladišče (Pohištvo)</option>
+              <option value="trgovina">Trgovina (Police)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label" for="itemQuantity">Skupna zaloga (kos) *</label>
+            <input type="number" id="itemQuantity" class="form-control" min="0" step="any" required>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="itemMinQuantity">Minimalna zaloga (opozorilo)</label>
+            <input type="number" id="itemMinQuantity" class="form-control" min="0" step="any" placeholder="8">
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="itemUnit">Enota mere</label>
+          <select id="itemUnit" class="form-control">
+            <option value="kos" selected>kos (komad)</option>
+            <option value="paket">paket</option>
+            <option value="škatla">škatla</option>
+            <option value="par">par</option>
+            <option value="paleta">paleta</option>
+            <option value="kg">kg</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="itemNotes">Opombe / Dimenzije</label>
+          <textarea id="itemNotes" class="form-control" rows="2" placeholder="Dimenzije, barva, dobavitelj..."></textarea>
+        </div>
+
+        <button type="submit" class="btn-primary" id="btnSaveItem">Shrani artikel</button>
+        <button type="button" class="btn-danger" id="btnDeleteItem" style="display: none;">Izbriši artikel</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- MODAL: HITRI PREMIK (PREVZEM / IZDAJA) -->
+  <div class="modal-backdrop" id="modalStockChange">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3 class="modal-title" id="stockChangeTitle">Sprememba zaloge</h3>
+        <button class="btn-close" id="btnCloseStockChange">&times;</button>
+      </div>
+      <form id="formStockChange">
+        <input type="hidden" id="changeItemId">
+        <input type="hidden" id="changeDirection" value="in">
+
+        <div style="background: var(--bg-card); padding: 12px; border-radius: var(--radius-sm); margin-bottom: 14px;">
+          <div style="font-weight: 700; font-size: 1.05rem;" id="changeItemName">Artikel</div>
+          <div style="color: var(--text-muted); font-size: 0.85rem;" id="changeItemCurrent">Trenutno stanje: 0 kos</div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" id="changeAmountLabel">Količina prevzema (+)</label>
+          <input type="number" id="changeAmount" class="form-control" style="font-size: 1.3rem; font-weight: bold;" min="1" step="any" value="1" required>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Razlog / Številka dobavnice / Opomba</label>
+          <input type="text" id="changeNote" class="form-control" placeholder="npr. Dobavnica #1024 ali prevzem palete">
+        </div>
+
+        <button type="submit" class="btn-primary" id="btnConfirmStockChange">Potrdi premik</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- MODAL: POMOČ PRI IZDAJI BLAGA (PO RAČUNU) -->
+  <div class="modal-backdrop" id="modalReceiptDispatch">
+    <div class="modal-dialog modal-lg" style="max-height: 92vh; display: flex; flex-direction: column;">
+      <div class="modal-header" style="border-bottom: 1px solid var(--border); padding-bottom: 10px;">
+        <div>
+          <div style="font-size: 0.72rem; text-transform: uppercase; color: var(--primary); font-weight: 800; letter-spacing: 0.5px;">
+            Izdaja blaga po računu
+          </div>
+          <h3 class="modal-title" id="dispatchReceiptTitle" style="font-size: 1.15rem; margin-top: 2px;">
+            Izdaja blaga
+          </h3>
+        </div>
+        <button type="button" class="btn-close" id="btnCloseReceiptDispatch">&times;</button>
+      </div>
+
+      <!-- Informacije o računu in napredek prevzema -->
+      <div class="dispatch-header-info">
+        <div class="dispatch-meta-grid">
+          <div><span class="meta-label">Št. računa:</span> <strong id="dispatchReceiptNo">0519-101-264866</strong></div>
+          <div><span class="meta-label">Datum:</span> <span id="dispatchReceiptDate">09.10.2026</span></div>
+          <div id="dispatchBarcodeRow" style="grid-column: 1 / -1; font-size: 0.76rem; color: var(--text-muted); display: none;">
+            Črtna koda računa: <code id="dispatchReceiptBarcode"></code>
+          </div>
+        </div>
+
+        <div class="dispatch-progress-container">
+          <div class="dispatch-progress-header">
+            <span id="dispatchProgressCount">Prevzeto 0 / 0 artiklov</span>
+            <span id="dispatchProgressPercent">0%</span>
+          </div>
+          <div class="dispatch-progress-bar-bg">
+            <div class="dispatch-progress-bar-fill" id="dispatchProgressBar" style="width: 0%;"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Vodič po regalih (Seznam postaj / regalov) -->
+      <div class="dispatch-route-body" id="dispatchRouteBody">
+        <!-- Dinamično generirane postaje z regali -->
+      </div>
+
+      <!-- Noga z zaključkom -->
+      <div class="modal-footer" style="padding-top: 10px; border-top: 1px solid var(--border); display: flex; gap: 8px; justify-content: space-between; margin-top: 6px;">
+        <button type="button" class="btn-secondary" id="btnCancelDispatch" style="margin: 0; width: auto; padding: 10px 16px;">Zapri</button>
+        <button type="button" class="btn-primary" id="btnFinishDispatch" style="margin: 0; flex: 1; background: linear-gradient(135deg, #10b981, #059669); border-color: #10b981;" disabled>
+          Zaključi izdajo
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: BLE BREZZICNA SINHRONIZACIJA -->
+  <div class="modal-backdrop" id="modalBLESync" style="display: none;">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3 class="modal-title" id="bleSyncTitle">Bluetooth sinhronizacija</h3>
+        <button class="btn-close" id="btnCloseBLESyncModal">&times;</button>
+      </div>
+
+      <div class="ble-radar-container">
+        <!-- Radar animacija -->
+        <div class="ble-radar-pulse" id="bleRadarPulse">
+          <div class="ble-radar-circle"></div>
+          <div class="ble-radar-circle"></div>
+          <div class="ble-radar-icon" id="bleRadarIcon" style="font-size: 0.9rem; font-weight: 700;">BLE</div>
+        </div>
+
+        <h4 id="bleSyncStatusTitle" style="font-size: 1.05rem; margin-bottom: 6px; color: #fff;">
+          Pripravljam povezavo...
+        </h4>
+        <p id="bleSyncStatusDesc" style="font-size: 0.82rem; color: var(--text-muted); max-width: 280px; margin-bottom: 14px;">
+          Druga naprava naj odpre sinhronizacijo.
+        </p>
+
+        <!-- Povzetek uspeha (prikazan ob zaključku) -->
+        <div id="bleSyncSummaryBox" style="display: none; width: 100%;" class="ble-summary-card">
+          <!-- Dinamično napolnjeno z rezultatom -->
+        </div>
+      </div>
+
+      <div style="display: flex; gap: 8px; margin-top: 10px;">
+        <button type="button" class="btn-secondary" id="btnCancelBLESync" style="margin: 0; flex: 1; padding: 12px;">
+          Prekliči
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: PREMESTITEV MED REGALI -->
+  <div class="modal-backdrop" id="modalMoveStock" style="display: none;">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3 class="modal-title">Premestitev med regali</h3>
+        <button type="button" class="btn-close" id="btnCloseMoveStockModal">&times;</button>
+      </div>
+      <form id="formMoveStock">
+        <input type="hidden" id="moveItemSku">
+        
+        <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px; margin-bottom: 12px;">
+          <div style="font-weight: 700; font-size: 0.95rem; color: #fff;" id="moveItemName">Artikel</div>
+          <div style="font-size: 0.78rem; color: var(--primary); font-family: monospace;" id="moveItemSkuDisplay"># 3600123</div>
+        </div>
+
+        <div class="form-group" id="moveBoxSelectGroup" style="display: none;">
+          <label class="form-label" for="moveBoxNum">Škatla za premestitev</label>
+          <select id="moveBoxNum" class="form-control"></select>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label" for="moveFromShelf">Iz regala (trenutno) *</label>
+            <select id="moveFromShelf" class="form-control" required></select>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="moveToShelf">Na regal (cilj) *</label>
+            <input type="text" id="moveToShelf" class="form-control" placeholder="npr. Regal P-09" required list="shelfSuggestions">
+            <datalist id="shelfSuggestions"></datalist>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="moveAmount">Količina za premestitev (škatel) *</label>
+          <input type="number" id="moveAmount" class="form-control" min="1" value="1" required style="font-size: 1.1rem; font-weight: 700; text-align: center;">
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="moveNote">Opomba ob premestitvi</label>
+          <input type="text" id="moveNote" class="form-control" placeholder="npr. Preliv / rezerva">
+        </div>
+
+        <div style="display: flex; gap: 8px; margin-top: 14px;">
+          <button type="button" class="btn-secondary" id="btnCancelMoveStock" style="margin: 0; flex: 1;">Prekliči</button>
+          <button type="submit" class="btn-primary" style="margin: 0; flex: 2; background: linear-gradient(135deg, #38bdf8, #0284c7);">
+            Potrdi premestitev
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- MODAL: ZAKLJUČEK IN POROČILO PREVZEMA POŠILJKE -->
+  <div class="modal-backdrop" id="modalReceivingBatch" style="display: none;">
+    <div class="modal-dialog" style="max-height: 90vh; overflow-y: auto;">
+      <div class="modal-header">
+        <div>
+          <h3 class="modal-title" id="receivingModalTitle">Prevzem pošiljke</h3>
+          <div style="font-size:0.75rem; color:var(--text-muted);" id="receivingModalDate">Začetek prevzema: danes</div>
+        </div>
+        <button type="button" class="btn-close" id="btnCloseReceivingModal">&times;</button>
+      </div>
+
+      <!-- Hitra statistika pošiljke -->
+      <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; margin: 10px 0;">
+        <div style="background: rgba(255,255,255,0.04); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px; text-align: center;">
+          <div style="font-size: 0.7rem; color: var(--text-muted);">Skupaj škatel</div>
+          <div style="font-size: 1.25rem; font-weight: 800; color: #fff;" id="recStatTotalBoxes">0</div>
+        </div>
+        <div style="background: rgba(16, 185, 129, 0.12); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: var(--radius-sm); padding: 8px; text-align: center;">
+          <div style="font-size: 0.7rem; color: #10b981; font-weight: 600;">Kompletirano</div>
+          <div style="font-size: 1.25rem; font-weight: 800; color: #10b981;" id="recStatCompleted">0</div>
+        </div>
+        <div style="background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: var(--radius-sm); padding: 8px; text-align: center;">
+          <div style="font-size: 0.7rem; color: #fbbf24; font-weight: 600;">Primanjkljaj</div>
+          <div style="font-size: 1.25rem; font-weight: 800; color: #fbbf24;" id="recStatMissing">0</div>
+        </div>
+      </div>
+
+      <!-- Obvestilo o ločenosti prevzemov od izdaj -->
+      <div style="background: rgba(56, 189, 248, 0.08); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: var(--radius-sm); padding: 7px 10px; margin: 8px 0; font-size: 0.75rem; color: #38bdf8;">
+        Vključeni so samo prevzemi blaga (vmesne izdaje ne vplivajo na obračun pošiljke).
+      </div>
+
+      <!-- Seznam kompletiranih artiklov -->
+      <div id="recCompletedSection" style="margin-top: 10px;">
+        <div style="font-size: 0.8rem; font-weight: 700; color: #10b981; margin-bottom: 6px;">
+          Novo kompletirane garniture:
+        </div>
+        <div id="recCompletedList" style="display: flex; flex-direction: column; gap: 6px;"></div>
+      </div>
+
+      <!-- Seznam primanjkljajev / nepopolnih škatel -->
+      <div id="recMissingSection" style="margin-top: 14px;">
+        <div style="font-size: 0.8rem; font-weight: 700; color: #fbbf24; margin-bottom: 6px;">
+          Primanjkljaji v tej pošiljki (nepopolne škatle):
+        </div>
+        <div id="recMissingList" style="display: flex; flex-direction: column; gap: 6px;"></div>
+      </div>
+
+      <!-- Seznam vseh prevzetih škatel -->
+      <div style="margin-top: 14px;">
+        <div style="font-size: 0.8rem; font-weight: 700; color: var(--text-muted); margin-bottom: 6px;">
+          Prevzete postavke v tej pošiljki:
+        </div>
+        <div id="recAllReceivedList" style="display: flex; flex-direction: column; gap: 5px; max-height: 180px; overflow-y: auto;"></div>
+      </div>
+
+      <!-- Gumbi za izvoz in zaključek -->
+      <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 16px; padding-top: 10px; border-top: 1px solid var(--border);">
+        <button type="button" class="btn-primary" id="btnExportReceivingPDF" onclick="exportReceivingPDF()" style="margin: 0; background: linear-gradient(135deg, #38bdf8, #0284c7);">
+          Prenesi PDF zapisnik prevzema
+        </button>
+        <div style="display: flex; gap: 8px;">
+          <button type="button" class="btn-secondary" id="btnKeepReceiving" style="margin: 0; flex: 1;">
+            Nadaljuj s prevzemom
+          </button>
+          <button type="button" class="btn-secondary" id="btnFinishReceivingSession" style="margin: 0; flex: 1; border-color: rgba(16, 185, 129, 0.5); color: #10b981;">
+            Zaključi pošiljko
+          </button>
+        </div>
+        <button type="button" class="btn-secondary" onclick="openReceivingArchiveModal()" style="margin: 0; padding: 10px; font-size: 0.82rem; border-color: rgba(255,255,255,0.15); color: var(--text-muted);">
+          Arhiv preteklih pošiljk
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: KONSOLIDACIJA ZALOGE (ZDRUŽEVANJE ŠKATEL) -->
+  <div class="modal-backdrop" id="modalConsolidation" style="display: none;">
+    <div class="modal-dialog" style="max-height: 90vh; overflow-y: auto;">
+      <div class="modal-header">
+        <div>
+          <h3 class="modal-title">Konsolidacija zaloge</h3>
+          <div style="font-size:0.75rem; color:var(--text-muted);">Združevanje razpršenih škatel na enotne regale</div>
+        </div>
+        <button type="button" class="btn-close" id="btnCloseConsolidationModal" onclick="closeConsolidationModal()">&times;</button>
+      </div>
+
+      <!-- Gumbi za izvoz in osvežitev -->
+      <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+        <button type="button" class="btn-primary" onclick="exportConsolidationPDF()" style="margin: 0; flex: 2; background: linear-gradient(135deg, #a855f7, #7c3aed); font-size: 0.82rem; padding: 10px;">
+          Prenesi delovni nalog (PDF)
+        </button>
+        <button type="button" class="btn-secondary" onclick="renderConsolidationList()" style="margin: 0; flex: 1; font-size: 0.82rem; padding: 10px;">
+          Osveži
+        </button>
+      </div>
+
+      <!-- Seznam razpršenih artiklov -->
+      <div id="consolidationItemsList" style="display: flex; flex-direction: column; gap: 10px;"></div>
+    </div>
+  </div>
+
+  <!-- MODAL: ARHIV PRETEKLIH PREVZEMOV -->
+  <div class="modal-backdrop" id="modalReceivingArchive" style="display: none;">
+    <div class="modal-dialog" style="max-height: 90vh; overflow-y: auto;">
+      <div class="modal-header">
+        <div>
+          <h3 class="modal-title">Arhiv prevzemnih pošiljk</h3>
+          <div style="font-size:0.75rem; color:var(--text-muted);">Zgodovina zaključenih prevzemov in PDF zapisniki</div>
+        </div>
+        <button type="button" class="btn-close" id="btnCloseReceivingArchiveModal" onclick="closeReceivingArchiveModal()">&times;</button>
+      </div>
+
+      <!-- Seznam arhiviranih pošiljk -->
+      <div id="receivingArchiveList" style="display: flex; flex-direction: column; gap: 10px;"></div>
+    </div>
+  </div>
+
+  <!-- MODAL: MEŠANE ŠKATLE (ZA SOFT ARTIKLE) -->
+  <div class="modal-backdrop" id="modalMixedBoxes" style="display: none;">
+    <div class="modal-dialog modal-lg" style="max-height: 92vh; display: flex; flex-direction: column;">
+      <div class="modal-header" style="border-bottom: 1px solid var(--border); padding-bottom: 10px;">
+        <div>
+          <div style="font-size: 0.72rem; text-transform: uppercase; color: #38bdf8; font-weight: 800; letter-spacing: 0.5px;">
+            Soft artikli & pakiranje
+          </div>
+          <h3 class="modal-title" style="font-size: 1.15rem; margin-top: 2px;">
+            Mešane škatle (Multi-SKU)
+          </h3>
+        </div>
+        <button type="button" class="btn-close" id="btnCloseMixedBoxesModal" onclick="closeMixedBoxesModal()">&times;</button>
+      </div>
+
+      <!-- Zavihki v oknu: Pregled škatel / Pakiranje nove -->
+      <div style="display: flex; gap: 8px; margin: 10px 0;">
+        <button type="button" class="chip active" id="tabBtnMixedList" onclick="switchMixedBoxSubTab('list')" style="flex: 1; text-align: center;">
+          Pregled škatel (<span id="mixedListTabBadge">0</span>)
+        </button>
+        <button type="button" class="chip" id="tabBtnMixedPack" onclick="switchMixedBoxSubTab('pack')" style="flex: 1; text-align: center;">
+          + Pakiraj novo škatlo
+        </button>
+      </div>
+
+      <!-- POD-ZAVIHEK 1: PREGLED ŠKATEL -->
+      <div id="subTabMixedList" style="display: flex; flex-direction: column; gap: 10px; overflow-y: auto; flex: 1;">
+        <div style="display: flex; gap: 8px;">
+          <input type="text" id="mixedSearchInput" class="form-control" placeholder="Išči po številki škatle, regalu ali artiklu..." style="font-size: 0.88rem;">
+        </div>
+        <div id="mixedBoxesContainer" style="display: flex; flex-direction: column; gap: 10px;">
+          <!-- Dinamične kartice mešanih škatel -->
+        </div>
+      </div>
+
+      <!-- POD-ZAVIHEK 2: PAKIRANJE NOVE ŠKATLE -->
+      <div id="subTabMixedPack" style="display: none; flex-direction: column; gap: 10px; overflow-y: auto; flex: 1;">
+        <form id="formPackMixedBox" onsubmit="event.preventDefault(); saveMixedBoxFromForm();">
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">Številka / koda škatle *</label>
+              <div style="display: flex; gap: 6px;">
+                <input type="text" id="packBoxNumber" class="form-control" placeholder="npr. 104" required>
+                <button type="button" class="btn-secondary" onclick="generateNextBoxNumber()" style="margin: 0; width: auto; padding: 0 10px; font-size: 0.78rem;">Samodejno</button>
+              </div>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Skladišče *</label>
+              <select id="packBoxWarehouse" class="form-control">
+                <option value="zgornje" selected>Zgornje skladišče (Soft)</option>
+                <option value="spodnje">Spodnje skladišče</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Regal / Polica lokacija *</label>
+            <input type="text" id="packBoxShelf" class="form-control" placeholder="npr. Regal Z-03" required list="shelfSuggestions">
+          </div>
+
+          <!-- Dodajanje artikla v škatlo -->
+          <div style="background: rgba(255, 255, 255, 0.03); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px; margin-top: 4px;">
+            <div style="font-size: 0.8rem; font-weight: 700; color: #fff; margin-bottom: 6px;">
+              Dodaj artikel v to škatlo:
+            </div>
+            <div style="display: flex; gap: 6px; margin-bottom: 6px;">
+              <input type="text" id="packAddSkuInput" class="form-control" placeholder="Skeniraj ali vpiši šifro..." style="flex: 2; font-size: 0.85rem;">
+              <button type="button" class="btn-secondary" onclick="openQuickCameraScanner('pack')" style="margin: 0; width: auto; padding: 0 10px; font-weight: 700; border-color: rgba(56, 189, 248, 0.4); color: #38bdf8;" title="Skeniraj artikel s kamero">
+                📷
+              </button>
+              <input type="number" min="1" value="1" id="packAddQtyInput" class="form-control" placeholder="Kosov" style="width: 65px; text-align: center; font-size: 0.85rem;">
+              <button type="button" class="btn-primary" onclick="addArticleToCurrentPackBox()" style="margin: 0; width: auto; padding: 0 12px; font-size: 0.8rem;">
+                Dodaj
+              </button>
+            </div>
+            <div id="packItemPreview" style="font-size: 0.75rem; color: var(--text-muted); min-height: 16px;"></div>
+          </div>
+
+          <!-- Tabela artiklov v tej škatli -->
+          <div style="margin-top: 6px;">
+            <div style="font-size: 0.8rem; font-weight: 700; color: var(--text-muted); margin-bottom: 4px;">
+              Vsebina škatle:
+            </div>
+            <table class="mixed-box-items-table">
+              <thead>
+                <tr>
+                  <th>Artikel</th>
+                  <th style="width: 60px; text-align: center;">Kos</th>
+                  <th style="width: 40px; text-align: center;"></th>
+                </tr>
+              </thead>
+              <tbody id="packBoxItemsTableBody">
+                <tr>
+                  <td colspan="3" style="text-align: center; color: var(--text-muted); padding: 12px;">Škatla je še prazna.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div style="display: flex; gap: 8px; margin-top: 14px;">
+            <button type="button" class="btn-secondary" onclick="closeMixedBoxesModal()" style="margin: 0; flex: 1;">Zapri</button>
+            <button type="submit" class="btn-primary" style="margin: 0; flex: 2; background: linear-gradient(135deg, #38bdf8, #0284c7);">
+              Shrani in natisni 6×6 nalepko
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: HITRI KAMERSKI SKENER (ZA POLICE, INVENTURO IN MEŠANE ŠKATLE) -->
+  <div class="modal-backdrop" id="modalQuickScanner" style="display: none; z-index: 1050;">
+    <div class="modal-dialog modal-lg" style="height: 88vh; max-height: 88vh; display: flex; flex-direction: column; padding: 12px; background: #0b0f19;">
+      <div class="modal-header" style="border-bottom: 1px solid var(--border); padding-bottom: 8px; margin-bottom: 8px;">
+        <div>
+          <div style="font-size: 0.70rem; text-transform: uppercase; color: #38bdf8; font-weight: 800; letter-spacing: 0.5px;" id="quickScanContextLabel">
+            Skeniranje s kamero
+          </div>
+          <h3 class="modal-title" id="quickScanTitle" style="font-size: 1.1rem; margin-top: 2px;">
+            Usmeri v etiketo ali črtno kodo
+          </h3>
+        </div>
+        <button type="button" class="btn-close" onclick="closeQuickScanner()">&times;</button>
+      </div>
+
+      <!-- Kamera z vizirjem -->
+      <div class="camera-preview-container" id="quickScanPreviewBox" style="flex: 1; min-height: 240px; width: 100%; max-width: 100%; border-radius: var(--radius-md); overflow: hidden; position: relative;" onclick="triggerQuickScanTapToFocus(event)">
+        <video id="quickScanVideo" playsinline autoplay muted style="width: 100%; height: 100%; object-fit: cover;"></video>
+        <canvas id="quickScanCanvas" style="display: none;"></canvas>
+
+        <div class="camera-status-bar" onclick="event.stopPropagation()">
+          <span class="scan-state-pill" id="quickScanStatusPill">Iščem šifro artikla...</span>
+          <div style="display: flex; align-items: center; gap: 5px;">
+            <button id="btnQuickScanTorch" type="button" onclick="toggleQuickScanTorch()" class="btn-sm" style="display: none; padding: 4px 8px; font-size: 0.72rem; background: rgba(15,23,42,0.85); border: 1px solid rgba(255,255,255,0.25); color: #fff; border-radius: 12px; cursor: pointer; font-weight: 700;">
+              🔦 Luč
+            </button>
+            <button id="btnQuickScanZoom" type="button" onclick="cycleQuickScanZoom()" class="btn-sm" style="padding: 4px 8px; font-size: 0.72rem; background: rgba(15,23,42,0.85); border: 1px solid rgba(255,255,255,0.25); color: #fff; border-radius: 12px; cursor: pointer; font-weight: 700;">
+              🔍 1x
+            </button>
+          </div>
+        </div>
+
+        <div class="scanner-overlay">
+          <div class="scan-frame box-frame" style="width: 82%; height: 60%;">
+            <div class="scan-laser-line"></div>
+            <div class="frame-corner top-left"></div>
+            <div class="frame-corner top-right"></div>
+            <div class="frame-corner bottom-left"></div>
+            <div class="frame-corner bottom-right"></div>
+            <div class="frame-label" id="quickScanFrameLabel">Etiketa na polici / škatli</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Možnost neprekinjenega štetja za inventuro -->
+      <div id="quickScanAuditContinuousRow" style="display: none; align-items: center; justify-content: space-between; background: rgba(255, 255, 255, 0.04); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; margin-top: 8px;">
+        <span style="font-size: 0.78rem; color: #fff;">Zaporedno štetje (ne zapiraj kamere):</span>
+        <input type="checkbox" id="chkQuickScanContinuous" checked style="width: 18px; height: 18px; accent-color: #38bdf8; cursor: pointer;">
+      </div>
+
+      <!-- Spodnja orodna vrstica -->
+      <div style="display: flex; gap: 8px; margin-top: 10px;">
+        <button type="button" class="btn-secondary" onclick="closeQuickScanner()" style="margin: 0; flex: 1; padding: 11px;">
+          Zapri
+        </button>
+        <button type="button" class="btn-primary" onclick="triggerQuickScanNativePhoto()" style="margin: 0; flex: 1.5; padding: 11px; background: linear-gradient(135deg, #0284c7, #0369a1); font-weight: 700; display: flex; align-items: center; justify-content: center; gap: 6px;">
+          📸 Foto zajem (HD)
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <input type="file" id="receiptFileInput" accept="image/*" style="display: none;">
+
+  <script src="jspdf.umd.min.js"></script>
+  <script src="jsbarcode.all.min.js"></script>
+  <script src="qrcode.min.js"></script>
+  <script src="ocr-parser.js"></script>
+  <script src="db.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
