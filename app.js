@@ -15,8 +15,21 @@ if (typeof window !== 'undefined' && 'BarcodeDetector' in window) {
 }
 let scanInterval = null;
 
+// Zagotovimo varno razdaljo od orodne vrstice/zareze (safe-area-inset-top za Android status bar)
+function initSafeAreaInsets() {
+  if (typeof window !== 'undefined' && window.Capacitor && window.Capacitor.isNativePlatform()) {
+    const rootStyle = getComputedStyle(document.documentElement);
+    const safeTop = rootStyle.getPropertyValue('--safe-top').trim();
+    if (!safeTop || safeTop === '0px' || safeTop === '') {
+      document.documentElement.style.setProperty('--safe-top', '32px');
+    }
+  }
+}
+initSafeAreaInsets();
+
 // Inicializacija ob nalaganju strani
 document.addEventListener('DOMContentLoaded', async () => {
+  initSafeAreaInsets();
   // 1. Registracija Service Workerja za offline podporo
   registerServiceWorker();
 

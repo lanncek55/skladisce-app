@@ -109,6 +109,63 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(NativeCameraScannerPlugin.class);
         super.onCreate(savedInstanceState);
         handleIncomingIntent(getIntent());
+        setupStatusBarInset();
+    }
+
+    @Override
+    public void onResume() {
+        super.onResume();
+        applyStatusBarInsets();
+    }
+
+    private void setupStatusBarInset() {
+        try {
+            androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(getWindow().getDecorView(), (v, windowInsets) -> {
+                applyStatusBarInsets();
+                return windowInsets;
+            });
+        } catch (Throwable ignored) {}
+        applyStatusBarInsets();
+    }
+
+    public void applyStatusBarInsets() {
+        runOnUiThread(() -> {
+            int statusBarPx = 0;
+            try {
+                androidx.core.view.WindowInsetsCompat rootInsets = androidx.core.view.ViewCompat.getRootWindowInsets(getWindow().getDecorView());
+                if (rootInsets != null) {
+                    androidx.core.graphics.Insets insets = rootInsets.getInsets(
+                        androidx.core.view.WindowInsetsCompat.Type.statusBars() | androidx.core.view.WindowInsetsCompat.Type.displayCutout()
+                    );
+                    statusBarPx = insets.top;
+                }
+            } catch (Throwable ignored) {}
+
+            if (statusBarPx <= 0) {
+                try {
+                    int resourceId = getResources().getIdentifier("status_bar_height", "dimen", "android");
+                    if (resourceId > 0) {
+                        statusBarPx = getResources().getDimensionPixelSize(resourceId);
+                    }
+                } catch (Throwable ignored) {}
+            }
+
+            float density = getResources().getDisplayMetrics().density;
+            int statusBarDp = (int) Math.ceil(statusBarPx / (density > 0 ? density : 1.0f));
+            if (statusBarDp <= 0) {
+                statusBarDp = 32;
+            }
+
+            final int safeTopDp = statusBarDp;
+            if (getBridge() != null && getBridge().getWebView() != null) {
+                getBridge().getWebView().post(() -> {
+                    getBridge().getWebView().evaluateJavascript(
+                        "document.documentElement.style.setProperty('--safe-top', '" + safeTopDp + "px');",
+                        null
+                    );
+                });
+            }
+        });
     }
 
     @Override
@@ -497,10 +554,19 @@ public class MainActivity extends BridgeActivity {
             rootLayout.addView(overlay);
 
             // Top Bar
+            int scannerStatusBarPx = 0;
+            try {
+                int resId = getActivity().getResources().getIdentifier("status_bar_height", "dimen", "android");
+                if (resId > 0) scannerStatusBarPx = getActivity().getResources().getDimensionPixelSize(resId);
+            } catch (Throwable ignored) {}
+            if (scannerStatusBarPx <= 0) {
+                scannerStatusBarPx = (int) (32 * getActivity().getResources().getDisplayMetrics().density);
+            }
+
             LinearLayout topBar = new LinearLayout(getActivity());
             topBar.setOrientation(LinearLayout.HORIZONTAL);
             topBar.setGravity(Gravity.CENTER_VERTICAL);
-            topBar.setPadding(24, 48, 24, 16);
+            topBar.setPadding(24, scannerStatusBarPx + 16, 24, 16);
             topBar.setBackgroundColor(Color.parseColor("#800b0f19"));
             FrameLayout.LayoutParams topBarParams = new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, 
