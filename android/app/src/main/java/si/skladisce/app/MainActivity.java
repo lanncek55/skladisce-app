@@ -62,6 +62,41 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
+import android.app.Dialog;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.PorterDuff;
+import android.graphics.PorterDuffXfermode;
+import android.graphics.RectF;
+import android.view.Gravity;
+import android.view.MotionEvent;
+import android.view.View;
+import android.view.ViewGroup;
+import android.view.Window;
+import android.view.WindowManager;
+import android.widget.Button;
+import android.widget.FrameLayout;
+import android.widget.LinearLayout;
+import android.widget.TextView;
+import androidx.camera.core.Camera;
+import androidx.camera.core.CameraControl;
+import androidx.camera.core.CameraInfo;
+import androidx.camera.core.CameraSelector;
+import androidx.camera.core.FocusMeteringAction;
+import androidx.camera.core.ImageAnalysis;
+import androidx.camera.core.ImageProxy;
+import androidx.camera.core.MeteringPoint;
+import androidx.camera.core.MeteringPointFactory;
+import androidx.camera.core.Preview;
+import androidx.camera.lifecycle.ProcessCameraProvider;
+import androidx.camera.view.PreviewView;
+import com.google.common.util.concurrent.ListenableFuture;
+import com.google.mlkit.vision.barcode.BarcodeScanner;
+import com.google.mlkit.vision.barcode.BarcodeScannerOptions;
+import com.google.mlkit.vision.barcode.BarcodeScanning;
+import com.google.mlkit.vision.barcode.common.Barcode;
+import com.google.mlkit.vision.text.TextRecognizer;
 
 public class MainActivity extends BridgeActivity {
     public static String pendingIncomingJson = null;
@@ -71,6 +106,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(MLKitDirectPlugin.class);
         registerPlugin(NativeFileSaverPlugin.class);
         registerPlugin(BLESyncPlugin.class);
+        registerPlugin(NativeCameraScannerPlugin.class);
         super.onCreate(savedInstanceState);
         handleIncomingIntent(getIntent());
     }
@@ -345,6 +381,466 @@ public class MainActivity extends BridgeActivity {
                 ret.put("hasData", false);
             }
             call.resolve(ret);
+        }
+    }
+
+    @CapacitorPlugin(name = "NativeCameraScanner")
+    public static class NativeCameraScannerPlugin extends Plugin {
+        private Dialog scannerDialog = null;
+        private ProcessCameraProvider cameraProvider = null;
+        private java.util.concurrent.ExecutorService cameraExecutor = null;
+        private boolean isTorchOn = false;
+        private CameraControl cameraControl = null;
+        private CameraInfo cameraInfo = null;
+        private PluginCall savedCall = null;
+        private long lastScanTime = 0;
+        private boolean isContinuousMode = false;
+        private BarcodeScanner barcodeScanner = null;
+        private TextRecognizer textRecognizer = null;
+        private TextView promptTextView = null;
+        private Button torchButton = null;
+        private float currentZoom = 0.0f;
+
+        @PluginMethod
+        public void startScanner(PluginCall call) {
+            if (ActivityCompat.checkSelfPermission(getContext(), Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+                ActivityCompat.requestPermissions(getActivity(), new String[]{Manifest.permission.CAMERA}, 9901);
+                call.reject("Dovoljenje za kamero ni odobreno.");
+                return;
+            }
+
+            this.savedCall = call;
+            String prompt = call.getString("prompt", "Usmeri v črtno kodo ali škatlo");
+            this.isContinuousMode = call.getBoolean("continuous", false);
+            this.lastScanTime = 0;
+            this.isTorchOn = false;
+            this.currentZoom = 0.0f;
+
+            getActivity().runOnUiThread(() -> {
+                showScannerUI(prompt);
+            });
+        }
+
+        @PluginMethod
+        public void stopScanner(PluginCall call) {
+            getActivity().runOnUiThread(this::dismissScanner);
+            call.resolve();
+        }
+
+        @PluginMethod
+        public void toggleTorch(PluginCall call) {
+            getActivity().runOnUiThread(() -> {
+                if (cameraControl != null) {
+                    isTorchOn = !isTorchOn;
+                    cameraControl.enableTorch(isTorchOn);
+                    if (torchButton != null) {
+                        torchButton.setText(isTorchOn ? "🔦 Izklop" : "🔦 Luč");
+                    }
+                    JSObject ret = new JSObject();
+                    ret.put("torch", isTorchOn);
+                    call.resolve(ret);
+                } else {
+                    call.reject("Kamera ni aktivna");
+                }
+            });
+        }
+
+        private void showScannerUI(String promptText) {
+            dismissScanner();
+
+            cameraExecutor = java.util.concurrent.Executors.newSingleThreadExecutor();
+
+            BarcodeScannerOptions barcodeOptions = new BarcodeScannerOptions.Builder()
+                .setBarcodeFormats(
+                    Barcode.FORMAT_EAN_13,
+                    Barcode.FORMAT_EAN_8,
+                    Barcode.FORMAT_CODE_128,
+                    Barcode.FORMAT_CODE_39,
+                    Barcode.FORMAT_QR_CODE,
+                    Barcode.FORMAT_UPC_A
+                )
+                .build();
+            barcodeScanner = BarcodeScanning.getClient(barcodeOptions);
+            textRecognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);
+
+            scannerDialog = new Dialog(getActivity(), android.R.style.Theme_Black_NoTitleBar_Fullscreen);
+            scannerDialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+            scannerDialog.setCancelable(true);
+            scannerDialog.setOnCancelListener(d -> {
+                if (savedCall != null) {
+                    JSObject ret = new JSObject();
+                    ret.put("cancelled", true);
+                    savedCall.resolve(ret);
+                    savedCall = null;
+                }
+                cleanupCamera();
+            });
+
+            FrameLayout rootLayout = new FrameLayout(getActivity());
+            rootLayout.setLayoutParams(new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 
+                ViewGroup.LayoutParams.MATCH_PARENT));
+            rootLayout.setBackgroundColor(Color.BLACK);
+
+            PreviewView previewView = new PreviewView(getActivity());
+            previewView.setLayoutParams(new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, 
+                FrameLayout.LayoutParams.MATCH_PARENT));
+            previewView.setScaleType(PreviewView.ScaleType.FILL_CENTER);
+            rootLayout.addView(previewView);
+
+            // Viewfinder HUD overlay
+            ViewfinderOverlayView overlay = new ViewfinderOverlayView(getActivity());
+            overlay.setLayoutParams(new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, 
+                FrameLayout.LayoutParams.MATCH_PARENT));
+            rootLayout.addView(overlay);
+
+            // Top Bar
+            LinearLayout topBar = new LinearLayout(getActivity());
+            topBar.setOrientation(LinearLayout.HORIZONTAL);
+            topBar.setGravity(Gravity.CENTER_VERTICAL);
+            topBar.setPadding(24, 48, 24, 16);
+            topBar.setBackgroundColor(Color.parseColor("#800b0f19"));
+            FrameLayout.LayoutParams topBarParams = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, 
+                FrameLayout.LayoutParams.WRAP_CONTENT, 
+                Gravity.TOP);
+            rootLayout.addView(topBar, topBarParams);
+
+            Button closeBtn = new Button(getActivity());
+            closeBtn.setText("✕");
+            closeBtn.setTextSize(20);
+            closeBtn.setTextColor(Color.WHITE);
+            closeBtn.setBackgroundColor(Color.parseColor("#33ffffff"));
+            closeBtn.setPadding(20, 10, 20, 10);
+            closeBtn.setOnClickListener(v -> {
+                if (savedCall != null) {
+                    JSObject ret = new JSObject();
+                    ret.put("cancelled", true);
+                    savedCall.resolve(ret);
+                    savedCall = null;
+                }
+                dismissScanner();
+            });
+            topBar.addView(closeBtn);
+
+            promptTextView = new TextView(getActivity());
+            promptTextView.setText(promptText);
+            promptTextView.setTextColor(Color.WHITE);
+            promptTextView.setTextSize(14);
+            promptTextView.setGravity(Gravity.CENTER);
+            LinearLayout.LayoutParams promptParams = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f);
+            promptParams.setMargins(16, 0, 16, 0);
+            promptTextView.setLayoutParams(promptParams);
+            topBar.addView(promptTextView);
+
+            torchButton = new Button(getActivity());
+            torchButton.setText("🔦 Luč");
+            torchButton.setTextSize(13);
+            torchButton.setTextColor(Color.WHITE);
+            torchButton.setBackgroundColor(Color.parseColor("#33ffffff"));
+            torchButton.setPadding(20, 10, 20, 10);
+            torchButton.setOnClickListener(v -> {
+                if (cameraControl != null) {
+                    isTorchOn = !isTorchOn;
+                    cameraControl.enableTorch(isTorchOn);
+                    torchButton.setText(isTorchOn ? "🔦 Izklop" : "🔦 Luč");
+                }
+            });
+            topBar.addView(torchButton);
+
+            // Bottom Bar with Zoom and Status
+            LinearLayout bottomBar = new LinearLayout(getActivity());
+            bottomBar.setOrientation(LinearLayout.VERTICAL);
+            bottomBar.setGravity(Gravity.CENTER_HORIZONTAL);
+            bottomBar.setPadding(24, 16, 24, 48);
+            bottomBar.setBackgroundColor(Color.parseColor("#800b0f19"));
+            FrameLayout.LayoutParams bottomBarParams = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, 
+                FrameLayout.LayoutParams.WRAP_CONTENT, 
+                Gravity.BOTTOM);
+            rootLayout.addView(bottomBar, bottomBarParams);
+
+            LinearLayout controlsRow = new LinearLayout(getActivity());
+            controlsRow.setOrientation(LinearLayout.HORIZONTAL);
+            controlsRow.setGravity(Gravity.CENTER);
+            bottomBar.addView(controlsRow);
+
+            Button zoomBtn = new Button(getActivity());
+            zoomBtn.setText("🔍 1.0x");
+            zoomBtn.setTextSize(13);
+            zoomBtn.setTextColor(Color.WHITE);
+            zoomBtn.setBackgroundColor(Color.parseColor("#3338bdf8"));
+            zoomBtn.setPadding(24, 8, 24, 8);
+            zoomBtn.setOnClickListener(v -> {
+                if (cameraControl != null) {
+                    if (currentZoom < 0.1f) {
+                        currentZoom = 0.35f;
+                        zoomBtn.setText("🔍 2.0x");
+                    } else {
+                        currentZoom = 0.0f;
+                        zoomBtn.setText("🔍 1.0x");
+                    }
+                    cameraControl.setLinearZoom(currentZoom);
+                }
+            });
+            controlsRow.addView(zoomBtn);
+
+            TextView statusFooter = new TextView(getActivity());
+            statusFooter.setText("Camera2 / CameraX strojni čitalnik • Zero-Copy ML Kit");
+            statusFooter.setTextSize(11);
+            statusFooter.setTextColor(Color.parseColor("#94a3b8"));
+            statusFooter.setGravity(Gravity.CENTER);
+            statusFooter.setPadding(0, 10, 0, 0);
+            bottomBar.addView(statusFooter);
+
+            // Tap to focus on preview
+            previewView.setOnTouchListener((v, event) -> {
+                if (event.getAction() == MotionEvent.ACTION_DOWN && cameraControl != null) {
+                    MeteringPointFactory factory = previewView.getMeteringPointFactory();
+                    MeteringPoint point = factory.createPoint(event.getX(), event.getY());
+                    FocusMeteringAction action = new FocusMeteringAction.Builder(point, FocusMeteringAction.FLAG_AF)
+                        .setAutoCancelDuration(3, java.util.concurrent.TimeUnit.SECONDS)
+                        .build();
+                    cameraControl.startFocusAndMetering(action);
+                    return true;
+                }
+                return false;
+            });
+
+            scannerDialog.setContentView(rootLayout);
+            scannerDialog.show();
+
+            startCameraX(previewView);
+        }
+
+        private void startCameraX(PreviewView previewView) {
+            ListenableFuture<ProcessCameraProvider> cameraProviderFuture = 
+                ProcessCameraProvider.getInstance(getActivity());
+
+            cameraProviderFuture.addListener(() -> {
+                try {
+                    cameraProvider = cameraProviderFuture.get();
+
+                    Preview preview = new Preview.Builder().build();
+                    preview.setSurfaceProvider(previewView.getSurfaceProvider());
+
+                    ImageAnalysis imageAnalysis = new ImageAnalysis.Builder()
+                        .setTargetResolution(new android.util.Size(1280, 720))
+                        .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                        .build();
+
+                    imageAnalysis.setAnalyzer(cameraExecutor, new ImageAnalysis.Analyzer() {
+                        @androidx.camera.core.ExperimentalGetImage
+                        @Override
+                        public void analyze(ImageProxy imageProxy) {
+                            android.media.Image mediaImage = imageProxy.getImage();
+                            if (mediaImage == null) {
+                                imageProxy.close();
+                                return;
+                            }
+
+                            long now = System.currentTimeMillis();
+                            if (now - lastScanTime < 650) {
+                                imageProxy.close();
+                                return;
+                            }
+
+                            InputImage image = InputImage.fromMediaImage(mediaImage, imageProxy.getImageInfo().getRotationDegrees());
+
+                            // 1. Bliskovito skeniranje 1D/2D črtnih kod
+                            barcodeScanner.process(image)
+                                .addOnSuccessListener(barcodes -> {
+                                    if (barcodes != null && !barcodes.isEmpty()) {
+                                        Barcode b = barcodes.get(0);
+                                        String val = b.getRawValue();
+                                        if (val != null && !val.trim().isEmpty()) {
+                                            lastScanTime = System.currentTimeMillis();
+                                            handleScanSuccess(val.trim(), "barcode", b.getFormat());
+                                            imageProxy.close();
+                                            return;
+                                        }
+                                    }
+
+                                    // 2. Če ni črtne kode, poskusi OCR za 7-mestne JYSK šifre
+                                    textRecognizer.process(image)
+                                        .addOnSuccessListener(visionText -> {
+                                            if (visionText != null) {
+                                                String fullText = visionText.getText();
+                                                String sku = extractJyskSku(fullText);
+                                                if (sku != null) {
+                                                    lastScanTime = System.currentTimeMillis();
+                                                    handleScanSuccess(sku, "ocr", 0);
+                                                }
+                                            }
+                                        })
+                                        .addOnCompleteListener(t -> imageProxy.close());
+                                })
+                                .addOnFailureListener(e -> imageProxy.close());
+                        }
+                    });
+
+                    CameraSelector cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA;
+                    cameraProvider.unbindAll();
+
+                    Camera camera = cameraProvider.bindToLifecycle(
+                        (androidx.lifecycle.LifecycleOwner) getActivity(), 
+                        cameraSelector, 
+                        preview, 
+                        imageAnalysis);
+
+                    cameraControl = camera.getCameraControl();
+                    cameraInfo = camera.getCameraInfo();
+
+                } catch (Exception e) {
+                    if (savedCall != null) {
+                        savedCall.reject("Napaka pri zagonu CameraX: " + e.getMessage());
+                        savedCall = null;
+                    }
+                    dismissScanner();
+                }
+            }, androidx.core.content.ContextCompat.getMainExecutor(getActivity()));
+        }
+
+        private String extractJyskSku(String text) {
+            if (text == null || text.isEmpty()) return null;
+            java.util.regex.Pattern p = java.util.regex.Pattern.compile("(?:artikel|art\\.?|šifra|sifra|koda)?\\s*\\b(3[0-9]{6}|4[0-9]{6}|[0-9]{7})\\b", java.util.regex.Pattern.CASE_INSENSITIVE);
+            java.util.regex.Matcher m = p.matcher(text);
+            if (m.find()) {
+                return m.group(1);
+            }
+            return null;
+        }
+
+        private void handleScanSuccess(String code, String type, int format) {
+            // Zvočni pisk
+            try {
+                android.media.ToneGenerator toneG = new android.media.ToneGenerator(android.media.AudioManager.STREAM_MUSIC, 100);
+                toneG.startTone(android.media.ToneGenerator.TONE_PROP_BEEP, 75);
+            } catch (Exception ignored) {}
+
+            // Haptična vibracija
+            try {
+                android.os.Vibrator v = (android.os.Vibrator) getContext().getSystemService(Context.VIBRATOR_SERVICE);
+                if (v != null) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        v.vibrate(android.os.VibrationEffect.createOneShot(45, android.os.VibrationEffect.DEFAULT_AMPLITUDE));
+                    } else {
+                        v.vibrate(45);
+                    }
+                }
+            } catch (Exception ignored) {}
+
+            getActivity().runOnUiThread(() -> {
+                JSObject ret = new JSObject();
+                ret.put("value", code);
+                ret.put("type", type);
+                ret.put("format", format);
+
+                if (savedCall != null) {
+                    savedCall.resolve(ret);
+                    savedCall = null;
+                }
+
+                notifyListeners("onScanned", ret);
+
+                if (!isContinuousMode) {
+                    dismissScanner();
+                }
+            });
+        }
+
+        private void dismissScanner() {
+            cleanupCamera();
+            if (scannerDialog != null) {
+                try {
+                    scannerDialog.dismiss();
+                } catch (Exception ignored) {}
+                scannerDialog = null;
+            }
+        }
+
+        private void cleanupCamera() {
+            if (cameraProvider != null) {
+                try {
+                    cameraProvider.unbindAll();
+                } catch (Exception ignored) {}
+                cameraProvider = null;
+            }
+            if (cameraExecutor != null) {
+                cameraExecutor.shutdown();
+                cameraExecutor = null;
+            }
+            cameraControl = null;
+            cameraInfo = null;
+            if (barcodeScanner != null) {
+                try { barcodeScanner.close(); } catch (Exception ignored) {}
+                barcodeScanner = null;
+            }
+            if (textRecognizer != null) {
+                try { textRecognizer.close(); } catch (Exception ignored) {}
+                textRecognizer = null;
+            }
+        }
+
+        // Viewfinder vizir overlay z izrezanim oknom
+        public static class ViewfinderOverlayView extends View {
+            private final Paint scrimPaint = new Paint();
+            private final Paint boxPaint = new Paint();
+            private final Paint cornerPaint = new Paint();
+            private final RectF boxRect = new RectF();
+
+            public ViewfinderOverlayView(Context context) {
+                super(context);
+                scrimPaint.setColor(Color.parseColor("#99000000"));
+
+                boxPaint.setColor(Color.parseColor("#3338bdf8"));
+                boxPaint.setStyle(Paint.Style.STROKE);
+                boxPaint.setStrokeWidth(3f);
+
+                cornerPaint.setColor(Color.parseColor("#38bdf8"));
+                cornerPaint.setStyle(Paint.Style.STROKE);
+                cornerPaint.setStrokeWidth(8f);
+                cornerPaint.setStrokeCap(Paint.Cap.ROUND);
+            }
+
+            @Override
+            protected void onDraw(Canvas canvas) {
+                super.onDraw(canvas);
+                int width = getWidth();
+                int height = getHeight();
+
+                float boxWidth = width * 0.82f;
+                float boxHeight = height * 0.32f;
+                float left = (width - boxWidth) / 2f;
+                float top = (height - boxHeight) / 2f;
+                boxRect.set(left, top, left + boxWidth, top + boxHeight);
+
+                // Temno ozadje zgoraj, spodaj, levo, desno
+                canvas.drawRect(0, 0, width, top, scrimPaint);
+                canvas.drawRect(0, top, left, top + boxHeight, scrimPaint);
+                canvas.drawRect(left + boxWidth, top, width, top + boxHeight, scrimPaint);
+                canvas.drawRect(0, top + boxHeight, width, height, scrimPaint);
+
+                // Okvir vizirja
+                canvas.drawRoundRect(boxRect, 16f, 16f, boxPaint);
+
+                // Kotne oznake
+                float cornerLen = 32f;
+                // Zgoraj levo
+                canvas.drawLine(left, top + cornerLen, left, top, cornerPaint);
+                canvas.drawLine(left, top, left + cornerLen, top, cornerPaint);
+                // Zgoraj desno
+                canvas.drawLine(left + boxWidth - cornerLen, top, left + boxWidth, top, cornerPaint);
+                canvas.drawLine(left + boxWidth, top, left + boxWidth, top + cornerLen, cornerPaint);
+                // Spodaj levo
+                canvas.drawLine(left, top + boxHeight - cornerLen, left, top + boxHeight, cornerPaint);
+                canvas.drawLine(left, top + boxHeight, left + cornerLen, top + boxHeight, cornerPaint);
+                // Spodaj desno
+                canvas.drawLine(left + boxWidth - cornerLen, top + boxHeight, left + boxWidth, top + boxHeight, cornerPaint);
+                canvas.drawLine(left + boxWidth, top + boxHeight - cornerLen, left + boxWidth, top + boxHeight, cornerPaint);
+            }
         }
     }
 

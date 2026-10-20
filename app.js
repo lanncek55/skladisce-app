@@ -6943,6 +6943,34 @@ let lastQuickScannedTime = 0;
 
 window.openQuickCameraScanner = async function(target = 'rep') {
   activeQuickScanTarget = target;
+
+  // 1. Če teče na Android napravi (APK), uporabi bliskoviti nativni Camera2 / CameraX zero-copy skener
+  if (window.Capacitor && window.Capacitor.isPluginAvailable && window.Capacitor.isPluginAvailable('NativeCameraScanner')) {
+    try {
+      const prompts = {
+        'rep': 'Usmeri v cenovko ali etiketo na polici',
+        'audit': 'Usmeri v škatlo ali etiketo (Inventura)',
+        'pack': 'Usmeri v artikel za mešano škatlo',
+        'search': 'Usmeri v črtno kodo ali škatlo artikla'
+      };
+      const prompt = prompts[target] || 'Usmeri v kodo ali škatlo';
+      const isContinuous = (target === 'audit' && document.getElementById('chkQuickScanContinuous')?.checked);
+
+      const res = await window.Capacitor.Plugins.NativeCameraScanner.startScanner({
+        prompt: prompt,
+        continuous: !!isContinuous
+      });
+
+      if (res && res.value && !res.cancelled) {
+        await handleQuickScanRecognized(res.value);
+      }
+      return;
+    } catch (nativeErr) {
+      console.warn('NativeCameraScanner ni uspel, uporabljam spletni WebRTC skener:', nativeErr);
+    }
+  }
+
+  // 2. Nadomestni način za brskalnik (WebRTC)
   const modal = document.getElementById('modalQuickScanner');
   if (!modal) return;
 
