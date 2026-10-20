@@ -52,10 +52,10 @@
 * Dvojni način prepoznave: Takojšnje branje 1D črtnih kod (EAN-13, Code 128), QR kod ter optično branje (OCR) 7-mestnih številk artiklov neposredno z nalepk dobaviteljev.
 * Integrirana podpora za strojno svetilko (🔦 Luč), digitalni zoom (🔍 1x/2x/3x) in ostrenje na dotik (Tap-to-Focus).
 
-### 7. Hibridna povezava s `storefront.jysk.com`
-* **Trgovina (LTE aktiven):** Telefon se neposredno povezuje s JYSK Storefrontom za prevzem dnevnih prodaj z blagajne in napovedanih tovornjakov (ASN).
-* **Skladišča (Klet / Ni signala):** Popolnoma avtonomno delovanje z lokalno IndexedDB bazo in Bluetooth Meshom.
-* **Store-and-Forward:** Ko delavec stopi nazaj v prodajni prostor, se vsi skladiščni dogodki nemudoma posredujejo v osrednji sistem.
+### 7. Načrtovana povezava s `storefront.jysk.com` (Police v trgovini) [TODO]
+* **Police v trgovini (LTE aktiven):** Načrtovana avtomatska povezava s Storefrontom bo zmanjševala **izključno stanje na prodajnih policah v trgovini** ob prodajah na blagajnah.
+* **Ločeno skladišče in prevzem:** Skladišče (Zgornje/Spodnje) in prevzem tovornjakov delujeta kot **popolnoma samostojen sistem**, ki ni vezan na Storefront. Skladiščne zaloge se zmanjšajo šele ob fizičnem prenosu blaga na polico z gumbom `Prenesi na polico`.
+* **Skladišča (Klet / Ni signala):** 100% avtonomno offline delovanje z lokalno IndexedDB bazo in samodejno Bluetooth Mesh sinhronizacijo med telefoni zaposlenih.
 
 ---
 

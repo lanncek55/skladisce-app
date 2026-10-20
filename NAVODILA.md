@@ -1,4 +1,4 @@
-﻿# OPERATIVNA NAVODILA ZA UPORABO APLIKACIJE: SKLADIŠČE & TRGOVINA
+# OPERATIVNA NAVODILA ZA UPORABO APLIKACIJE: SKLADIŠČE & TRGOVINA
 **Standard Operating Procedure (SOP) | Celoviti priročnik vseh funkcij in gumbov**
 
 Ta dokument zajema **vsak gumb, stikalo, ikono, vnosno polje in modalno okno** v aplikaciji. Namenjen je operativnemu delu skladiščnikov in prodajalcev v okolju brez Wi-Fi povezave.
@@ -25,7 +25,7 @@ Ta dokument zajema **vsak gumb, stikalo, ikono, vnosno polje in modalno okno** v
 16. [Zavihek 5: Dnevnik premikov (Revizijska sled)](#16-zavihek-5-dnevnik-premikov-revizijska-sled)
 17. [Zavihek 6: Nastavitve, Izvozi, Podatki & Lokacije](#17-zavihek-6-nastavitve-izvozi-podatki--lokacije)
 18. [Bluetooth Mesh sinhronizacija v praksi (Brez Wi-Fi)](#18-bluetooth-mesh-sinhronizacija-v-praksi-brez-wi-fi)
-19. [Hibridna sinhronizacija: LTE v trgovini + BLE v skladišču + JYSK Storefront](#19-hibridna-sinhronizacija-lte-v-trgovini--ble-v-skladišču--jysk-storefront)
+19. [Načrtovana integracija: Storefront (Police v trgovini) in ločen sistem skladišča [TODO]](#19-načrtovana-integracija-storefront-police-v-trgovini-in-ločen-sistem-skladišča-todo)
 
 ---
 
@@ -223,6 +223,11 @@ Modul za prodajalce in skladiščnike za vzdrževanje polnih polic v prodajalni.
 | **Filtri skladišča (Chips)** | `Vse`, `Zgornje skl.`, `Spodnje skl.` | Filtrira nabiralni seznam glede na to, v katero skladišče mora delavec. |
 | **Gumb "Prenesi na polico"** | `.btn-transfer-shelf` | **Ključni gumb:** Ko delavec prinese robo na polico, klikne ta gumb. Zaloga v skladišču se avtomatsko zmanjša, stanje na polici v trgovini pa poveča. |
 | **Gumb 🗑️ (Rdeč)** | `deleteReplenishmentItem` | Odstrani posamezen artikel z nabiralnega seznama brez premika zaloge. |
+
+> [!IMPORTANT]
+> **Ločitev polic trgovine in skladišča:**
+> * Prodaje na blagajnah (Storefront) zmanjšujejo **izključno stanje na polici v trgovini** (`storeQuantity`).
+> * Skladišče ostane **nespremenjeno**, dokler delavec fizično ne vzame blaga iz regala v skladišču, ga postavi na polico in v aplikaciji potrdi **`Prenesi na polico`**. Šele ta klik odšteje kos iz skladišča.
 
 ---
 
@@ -496,106 +501,139 @@ Baza: v=14 (#F3A1)                              Baza: v=14 (#99B0)
 
 ---
 
-## 19. HIBRIDNA SINHRONIZACIJA: LTE V TRGOVINI + BLE V SKLADIŠČU + JYSK STOREFRONT
+## 19. NAČRTOVANA INTEGRACIJA: STOREFRONT (POLICE V TRGOVINI) IN LOČEN SISTEM SKLADIŠČA [TODO]
 
-### Stanje infrastrukture poslovalnice
-* **Mobilne naprave:** Vsi telefoni imajo aktivno **LTE mobilno povezavo**.
-* **Prodajni prostor (Trgovina):** LTE deluje nemoteno in zanesljivo.
-* **Skladišča (Spodnje / Zgornje):** Signal niha ali ga v kleti sploh ni.
-* **Obstoječi sistem:** Poslovalnica že uporablja **`storefront.jysk.com`** za osnovno zalogo, vendar ta nima podpore za:
-  * Razdelitev večdelnih garnitur na posamezne škatle (Škatla 1/2 in 2/2) in preverjanje celovitosti.
-  * Spremljanje kapacitete prodajnih polic in avtomatsko generiranje nabiralnih nalogov.
-  * Pakiranje mešanih škatel za soft blago z nalepkami 6×6 cm za tiskalnik Citizen.
-  * Fizično ločevanje lokacij med Zgornjim (soft) in Spodnjim (pohištvo) skladiščem.
-  * Zvezno delovanje brez internetnega signala v globini skladišča.
+> [!NOTE]
+> **Status funkcije: [TODO / NAČRTOVANO]**  
+> Neposredna avtomatska izmenjava podatkov s sistemom `storefront.jysk.com` je v načrtu za prihodnjo nadgradnjo. V tem poglavju je natančno določeno operativno in arhitekturno pravilo, kako bosta sistema povezana.
 
 ---
 
-### Hibridna arhitektura delovanja (Store-and-Forward)
+### Temeljno pravilo ločitve: Police trgovine vs. Skladišče & Prevzem
 
-Aplikacija deluje v hibridnem načinu, ki združuje prednosti mobilnega interneta v trgovini in Bluetooth Mesh omrežja v skladišču:
+V poslovalnici sta vzpostavljena **dva strogo ločena nivoja vodenja zaloge**:
+
+1. **Zaloga s Storefronta je povezana IZKLJUČNO z izdelki na policah v trgovini:**
+   * Povezava s `storefront.jysk.com` zajema **samo prodajni prostor (police v trgovini)** (`storeQuantity`).
+   * **Avtomatsko odštevanje ob prodaji:** Ko kupec na blagajni kupi izdelek, Storefront zabeleži prodajo. Aplikacija ob sinhronizaciji **samodejno odšteje to količino izključno iz police v trgovini**.
+   * **Primer:** Če sta na polici 2 stola in blagajna zabeleži prodajo 1 kosa, novo stanje na polici samodejno postane 1 kos.
+
+2. **Skladišče in Prevzem pošiljk sta POSEBEN, NESINHRONIZIRAN SISTEM:**
+   * Fizični skladišči (**Zgornje skladišče za soft izdelke** in **Spodnje skladišče za pohištvo**) ter modul **Prevzem pošiljke** (razkladanje tovornjakov z OCR čitalnikom) **NISTA sinhronizirana s Storefrontom**.
+   * Skladišče deluje kot **popolnoma samostojen, avtonomen sistem**, ki ga vodita skladiščnika lokalno na telefonih (100% delovanje offline brez interneta).
+   * **Razlog za ločenost:** Storefront ne pozna fizičnih regalov v poslovalnici, ne vodi večdelnih garnitur pohištva po posameznih škatlah (Škatla 1/2 in 2/2) ter ne pozna mešanih škatel za tekstil z nalepkami Citizen. To v celoti in neodvisno vodi naša mobilna aplikacija.
+
+3. **Povezovalni most: Modul "Police & Nabiranje" (Dopolnjevanje iz skladišča):**
+   * Ko Storefront zaradi prodaj zmanjša zalogo na polici pod nastavljeno kapaciteto (`shelfCapacity`), naša aplikacija samodejno zazna primanjkljaj (`neededForShelf`).
+   * Artikel se avtomatsko uvrsti na **Nabiralni seznam za trgovino** (zavihek *Police*).
+   * Prodajalec ali skladiščnik vzame artikel iz skladišča (kjer aplikacija točno izpiše regal in številko škatle) ter ga odnese na polico v trgovino.
+   * Ob odložitvi na polico delavec v aplikaciji klikne gumb **`Prenesi na polico`**:
+     * **Šele ob tem dejanju** se v naši aplikaciji **zmanjša zaloga v skladišču** in **poveča zaloga na polici v trgovini**.
+
+---
+
+### Arhitektura toka podatkov in ločitve pristojnosti
 
 ```
-[PRODAJNI PROSTOR / TRGOVINA]                   [SKLADIŠČE - KLET BREZ SIGNALA]
-(LTE signal 100% aktiven)                       (Ni LTE signala / podzemlje)
-           │                                                  │
-           ├───────► Povezava s storefront.jysk.com           │
-           │         (Prenos prodaj s blagajne, dobavnic)     │
-           │                                                  │
-           ▼                                                  ▼
-     [TELEFON V TRGOVINI] ◄───── Bluetooth Mesh ──────► [TELEFON V SKLADIŠČU]
-     (Prevzame prodaje;         (Ko se delavca srečata  (Razkladanje tovornjaka,
-      ko stopi v skladišče,      v dosegu 15 m, se       štetje škatel 1/2 in 2/2,
-      jih preda skladiščniku)    baza takoj uskladi)     popis polic brez interneta)
-           │                                                  │
-           ▼                                                  ▼
-  [VRNITEV V TRGOVINO]                               [DELO POTEKA NEMOTENO]
-  Ko delavec pride iz skladišča                      Vsi dogodki se vrstijo v
-  v trgovino, telefon prek LTE                       lokalni čakalni vrsti
-  posodobi stanje v oblaku / JYSK                    (CRDT Delta log)
+┌────────────────────────────────────────────────────────┐
+│             PRODAJNI PROSTOR & BLAGAJNE                │
+│             (LTE povezava 100% delujoča)               │
+└───────────────────────────┬────────────────────────────┘
+                            │ Prodaja artikla na blagajni
+                            ▼
+           ┌──────────────────────────────────┐
+           │      storefront.jysk.com         │
+           │  (Globalna evidenca poslovalnice)│
+           └────────────────┬─────────────────┘
+                            │ [TODO] Avtomatska sinhronizacija prodaj
+                            ▼
+           ┌──────────────────────────────────┐
+           │     POLICE V TRGOVINI (TRG)      │
+           │  Zaloga se samodejno ZMANJŠA     │
+           │  (Skladišče ostane nespremenjeno)│
+           └────────────────┬─────────────────┘
+                            │ Stanje na polici pade pod kapaciteto
+                            ▼
+           ┌──────────────────────────────────┐
+           │      NABIRALNI SEZNAM ZA POLICE  │
+           │  (Zavihek "Police & Nabiranje")  │
+           └────────────────┬─────────────────┘
+                            │
+════════════════════════════╪═══════════════════════════════════
+ FIZIČNI PRENOS Z BLAGOM    │ Delavec nabere blago v skladišču,
+ IZ SKLADIŠČA V TRGOVINO    │ ga postavi na polico in klikne:
+                            ▼ [ Prenesi na polico ]
+════════════════════════════╪═══════════════════════════════════
+                            │ (Odšteje skladišče, prišteje polici)
+                            │
+┌───────────────────────────┴────────────────────────────┐
+│      LOČEN, AVTONOMEN SISTEM SKLADIŠČA (OFFLINE)       │
+│      (Zgornje soft skladišče + Spodnje pohištvo)       │
+│                                                        │
+│  * Razkladanje tovornjaka: Modul "Prevzem pošiljke"    │
+│    (Ni povezano s Storefrontom - vpis neposredno v DB) │
+│  * Vodenje škatel 1/2 in 2/2 ter mešanih škatel        │
+│  * Točne lokacije po regalih (Regal S-01, Z-04 ...)    │
+│  * Sinhronizacija med skladiščniki prek BLUETOOTH MESH │
+└────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-### Kako povezati našo aplikacijo s `storefront.jysk.com`
+### Tabela pristojnosti: Storefront vs. Naša aplikacija
 
-Ker Storefront vsebuje uradne šifre in globalno zalogo, naša aplikacija pa dodaja operativne funkcije za police in škatle, obstajajo **3 preizkušeni načini izmenjave**:
-
-#### Način 1: Samodejni REST API / Sejni žeton (Popolna avtomatika)
-1. **Povezava:** Ko je telefon v trgovini na LTE omrežju, aplikacija v ozadju kliče interne končne točke (REST API) JYSK Storefronta z veljavnim sejnim žetonom poslovalnice.
-2. **Prenos v aplikacijo (Inbound):**
-   * **Šifrant in nazivi:** Samodejno posodabljanje novih artiklov in cen.
-   * **Napovedani tovornjaki (ASN):** Prebere seznam artiklov na poti in jih pripravi za razkladanje v modulu **Prevzem pošiljke**.
-   * **Dnevne prodaje z blagajn:** Prevzame število prodanih kosov v tekočem dnevu.
-3. **Učinek na police v trgovini:**
-   * Ko Storefront javi, da je bil prodan stol `CH-4401`, aplikacija avtomatsko zmanjša stanje na polici `TRG-POLICA-02`.
-   * Ko stanje pade pod določeno kapaciteto, se artikel **samodejno pojavi na nabiralnem seznamu** z navodilom: *"Prinesi 2 kosa iz Zgornjega skladišča (Regal Z-01)"*.
-
-#### Način 2: JYSK Storefront Sync razširitev (Brez spreminjanja osrednjega JYSK IT sistema)
-Če centralni IT oddelek JYSK ne omogoča odpiranja neposrednih API ključev za poslovalnico:
-1. Na računalniku v poslovalnici (kjer je vodja že prijavljen v `storefront.jysk.com`) se namesti lahka skripta ali razširitev za brskalnik (Chrome Extension).
-2. **Postopek z 1 klikom:** Vodja zjutraj ali ob prihodu tovornjaka klikne gumb `Izvozi v Skladišče`.
-3. Skripta v trenutku varno prenese trenutno stanje poslovalnice v aplikacijski oblak, od koder ga telefoni preko LTE potegnejo v 3 sekundah.
-
-#### Način 3: Izvoz / Uvoz CSV poročila (Takoj delujoče brez namestitev)
-1. V `storefront.jysk.com` se izvozi standardno poročilo zaloge poslovalnice v Excel / CSV.
-2. V naši aplikaciji greste na: **Nastavitve -> Uvoz podatkov -> Uvozi varnostno kopijo / zalogo**.
-3. Aplikacija uvozi artikle in jih samodejno razporedi glede na to, ali gre za soft blago (Zgornje skladišče) ali pohištvo (Spodnje skladišče).
-
----
-
-### Kaj naša aplikacija dodaja čez `storefront.jysk.com`?
-
-| Funkcija | storefront.jysk.com | Naša mobilna aplikacija |
+| Operativno področje | Sistem Storefront | Naša mobilna aplikacija |
 | :--- | :---: | :---: |
-| **Prikaz celotne zaloge poslovalnice** | DA | DA |
-| **Delovanje v kleti / skladišču brez signala** | NE (potrebuje povezavo) | **DA (100% offline + BLE Mesh)** |
-| **Ločevanje garnitur (Škatla 1/2 in 2/2)** | NE (vidi samo skupni kos) | **DA (opozorilo, če manjka škatla)** |
-| **Kapaciteta polic v trgovini & nabiranje** | NE | **DA (avtomatski nabiralni list)** |
-| **Mešane škatle za soft blago (Multi-SKU)** | NE | **DA (pakiranje in evidenca)** |
-| **Tisk nalepk Citizen 6×6 cm z QR kodo** | NE | **DA (generiranje PDF nalepke)** |
-| **Optično prepoznavanje etiket s kamero (OCR)** | NE | **DA (bliskovito skeniranje škatel)** |
-| **Zemljevid / pot po regalih ob izdaji kupcu** | NE | **DA (vodenje po postajah)** |
+| **Dnevne prodaje z blagajn** | **Glavni vir** (zajema prodaje) | Sprejme prodajo in zmanjša stanje police |
+| **Zaloga na prodajnih policah (`TRG`)** | Sinhronizirano s policami | **Upravlja** kapaciteto in primanjkljaj |
+| **Zaloga v skladišču (Regali)** | **NE POZNA** (nima podatkov o regalih) | **Popolna evidenca** (Zgornje / Spodnje skl.) |
+| **Prevzem novih tovornjakov (Palete)** | **NE POVEZANO** z našim prevzemom | **Lokalni prevzem** s kamero (OCR) |
+| **Garniture pohištva (Škatla 1/2 in 2/2)**| NE (vidi le nedefiniran kos) | **DA** (nadzor nad manjkajočimi škatlami) |
+| **Mešane škatle za soft blago (Multi-SKU)**| NE | **DA** (pakiranje + etikete Citizen 6×6) |
+| **Prenos blaga iz skladišča na police** | NE | **DA** (`Prenesi na polico` uskladi obe zalogi)|
+| **Delovanje v kleti / skladišču brez signala**| NE (zahteva internet) | **DA (100% offline z Bluetooth Mesh)** |
 
 ---
 
-### Priporočeni postopek dela v poslovalnici (Dnevna rutina)
+### Načrtovani načini izmenjave podatkov s Storefrontom (TODO)
 
-1. **Jutranji zagon (Trgovina - LTE):**
-   * Pred odprtjem prodajalec v trgovini odpre aplikacijo. Preko LTE se avtomatsko osvežijo prodaje prejšnjega dne in potegnejo morebitne nove šifre.
-   * Odpre se zavihek **Police & Nabiranje**: aplikacija že prikazuje vse police, ki jih je treba dopolniti pred odprtjem trgovine.
+Ko bo integracija aktivirana, bo izmenjava potekala izključno za police v trgovini po eni od treh metod:
+
+#### Način 1: Avtomatski REST API / Sejni žeton (Popolna avtomatika)
+1. Telefon v prodajalni preko delujočega LTE omrežja v ozadju prebere seznam dnevno prodanih kosov iz `storefront.jysk.com`.
+2. Aplikacija za vsak prodan kos poišče artikel in **zmanjša izključno števec police v trgovini** (`storeQuantity`).
+3. Zaloga v Zgornjem in Spodnjem skladišču ostane nedotaknjena.
+4. Če je stanje na polici manjše od nastavljene kapacitete police, se artikel takoj uvrsti na **Nabiralni seznam**.
+
+#### Način 2: Razširitev JYSK Storefront Sync (Hitra sinhronizacija z 1 klikom)
+1. Na računalniku poslovalnice v programu Google Chrome deluje lahka razširitev.
+2. Vodja ob koncu dneva ali med izmeno klikne gumb `Pošlji prodaje v aplikacijo`.
+3. Podatki o prodajah se posredujejo v bazo aplikacije in osvežijo stanje polic v trgovini. Skladišče in prevzemi ostanejo nespremenjeni.
+
+#### Način 3: Uvoz CSV poročila prodaje
+1. V Storefrontu se izvozi standardno dnevno poročilo prodaje ali stanja trgovine.
+2. V aplikaciji se v zavihku *Nastavitve* uvozi ta datoteka z izbiro možnosti *Posodobi police trgovine*.
+3. Aplikacija popravi zgolj števce polic, medtem ko skladiščne lokacije in stanja po regalih ostanejo točno takšna, kot sta jih zabeležila skladiščnika.
+
+---
+
+### Priporočena vsakodnevna rutina v poslovalnici
+
+1. **Jutranji pregled polic (Trgovina - LTE):**
+   * Prodajalec odpre zavihek **Police & Nabiranje**.
+   * Ker so prodaje prejšnjega dne zmanjšale zalogo na policah, aplikacija že ponuja pripravljen nabiralni nalog z vsemi artikli, ki jih je treba dopolniti pred odprtjem poslovalnice.
 2. **Nabiranje v skladišču (Brez signala):**
    * Prodajalec gre z vozičkom v Zgornje ali Spodnje skladišče.
-   * Aplikacija deluje nemoteno offline. Prodajalec nabere blago in klikne `Prenesi na polico`.
-3. **Prihod tovornjaka (Spodnje skladišče):**
-   * Skladiščnik v kleti razklada tovor. S kamero skenira škatle.
-   * Aplikacija sproti javlja, kateri kosi so postali popolni kompleti (1/2 + 2/2) in kateri še čakajo.
-4. **Srečanje zaposlenih (Bluetooth Mesh):**
-   * Ko skladiščnik in prodajalec prideta v bližino (npr. pri dvigalu ali stopnišču), se vsi novi prevzemi tovornjaka in premiki na police avtomatsko združijo preko Bluetootha.
-5. **Samodejni prenos v oblak (Trgovina - LTE):**
-   * Ko prodajalec z vozičkom stopi nazaj v trgovino, njegov telefon preko LTE v sekundi posreduje celotno osveženo stanje.
+   * Aplikacija deluje popolnoma offline. Na zaslonu točno piše, na katerem regalu je posamezen artikel.
+   * Ko prodajalec artikel položi na polico v trgovini, klikne gumb **`Prenesi na polico`**. S tem se zaloga v skladišču zmanjša, stanje na polici pa ustrezno poveča.
+3. **Razkladanje tovornjaka (Ločen skladiščni prevzem):**
+   * Ko prispe tovornjak, skladiščnik v kleti odpre zavihek **Prevzem pošiljke**.
+   * Neodvisno od Storefronta s kamero skenira prispele škatle in jih razporedi po regalih.
+   * Nova roba se zapiše v skladiščno bazo.
+4. **Samodejno usklajevanje med napravami (Bluetooth Mesh):**
+   * Ko se skladiščnik in prodajalec srečata (npr. pri dvigalu ali vhodu v skladišče), se novi prevzemi tovornjaka in potrjeni prenosi na police avtomatsko uskladijo med vsemi telefoni preko Bluetooth Mesha – brez potrebe po internetni povezavi.
 
 ---
-*Standard Operating Procedure (SOP) | Interna tehnična dokumentacija poslovalnice. Verzija: 2.4-BLE-Mesh.*
+*Standard Operating Procedure (SOP) | Interna tehnična dokumentacija poslovalnice. Verzija: 2.5-Storefront-Shelf-Architecture.*
 
 
