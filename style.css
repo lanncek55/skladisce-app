@@ -1710,6 +1710,366 @@ body {
   color: #e2e8f0;
 }
 
+/* =========================================================================
+   DOMAČI ZASLON (HOME SCREEN) & GLAVNA NADZORNA PLOŠČA
+   ========================================================================= */
 
+body {
+  padding-bottom: calc(24px + var(--safe-bottom)) !important;
+}
 
+.btn-header-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--border);
+  color: #fff;
+  font-size: 0.82rem;
+  font-weight: 700;
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s;
+}
+.btn-header-back:active {
+  transform: scale(0.96);
+  background: rgba(255, 255, 255, 0.15);
+}
 
+.btn-subview-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(30, 41, 59, 0.85);
+  border: 1px solid var(--border);
+  color: #38bdf8;
+  font-size: 0.82rem;
+  font-weight: 700;
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.btn-subview-back:active {
+  background: rgba(56, 189, 248, 0.15);
+}
+
+/* Povzetek poslovalnice na domačem zaslonu */
+.home-summary-card {
+  background: linear-gradient(135deg, rgba(30, 41, 59, 0.75), rgba(15, 23, 42, 0.95));
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+}
+
+.home-summary-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.home-summary-title {
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  font-weight: 700;
+}
+
+.home-summary-badge {
+  font-size: 0.70rem;
+  color: #10b981;
+  font-weight: 700;
+  background: rgba(16, 185, 129, 0.14);
+  padding: 2px 8px;
+  border-radius: 12px;
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.home-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+
+.home-stat-box {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: var(--radius-sm);
+  padding: 8px 4px;
+  text-align: center;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s;
+}
+.home-stat-box:active {
+  transform: scale(0.95);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.home-stat-num {
+  display: block;
+  font-size: 1.15rem;
+  font-weight: 800;
+  color: #fff;
+  line-height: 1.1;
+}
+
+.home-stat-lbl {
+  display: block;
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  font-weight: 600;
+  margin-top: 3px;
+}
+
+.home-stat-box.warning .home-stat-num {
+  color: #fbbf24;
+}
+
+.home-stat-box.danger .home-stat-num {
+  color: #f87171;
+}
+
+/* Aktivna pasica prevzema tovornjaka */
+.home-receiving-banner {
+  display: none;
+  justify-content: space-between;
+  align-items: center;
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(16, 185, 129, 0.35);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  cursor: pointer;
+  transition: transform 0.1s, background 0.15s;
+}
+.home-receiving-banner.active {
+  display: flex;
+}
+.home-receiving-banner:active {
+  transform: scale(0.98);
+  background: rgba(16, 185, 129, 0.2);
+}
+.home-receiving-banner .hr-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.home-receiving-banner .hr-title {
+  font-weight: 700;
+  font-size: 0.9rem;
+  color: #fff;
+}
+.home-receiving-banner .hr-sub {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+.home-receiving-banner .hr-arrow {
+  font-size: 1rem;
+  color: #34d399;
+  font-weight: bold;
+}
+
+/* Mreža glavnih modulov na domačem zaslonu */
+.home-tiles-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.home-tile {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 13px 12px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-height: 112px;
+  cursor: pointer;
+  user-select: none;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.18);
+  transition: background 0.15s, border-color 0.15s, transform 0.1s;
+}
+.home-tile:active {
+  transform: scale(0.97);
+  background: var(--bg-card-hover);
+  border-color: rgba(56, 189, 248, 0.4);
+}
+
+.tile-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 8px;
+}
+
+.tile-icon-box {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.25rem;
+}
+
+.icon-emerald { background: rgba(16, 185, 129, 0.16); color: #34d399; }
+.icon-sky { background: rgba(2, 132, 199, 0.18); color: #38bdf8; }
+.icon-indigo { background: rgba(99, 102, 241, 0.18); color: #818cf8; }
+.icon-amber { background: rgba(245, 158, 11, 0.18); color: #fbbf24; }
+.icon-cyan { background: rgba(6, 182, 212, 0.18); color: #22d3ee; }
+.icon-rose { background: rgba(244, 63, 94, 0.18); color: #fb7185; }
+.icon-purple { background: rgba(168, 85, 247, 0.18); color: #c084fc; }
+.icon-slate { background: rgba(100, 116, 139, 0.18); color: #cbd5e1; }
+
+.tile-badge {
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 10px;
+}
+.badge-warning {
+  background: rgba(245, 158, 11, 0.18);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+}
+.badge-success {
+  background: rgba(16, 185, 129, 0.18);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.35);
+}
+.badge-info {
+  background: rgba(56, 189, 248, 0.18);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.35);
+}
+.badge-neutral {
+  background: rgba(255, 255, 255, 0.08);
+  color: #94a3b8;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+.badge-amber {
+  background: rgba(245, 158, 11, 0.18);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+}
+.badge-cyan {
+  background: rgba(6, 182, 212, 0.18);
+  color: #22d3ee;
+  border: 1px solid rgba(6, 182, 212, 0.35);
+}
+.badge-rose {
+  background: rgba(244, 63, 94, 0.18);
+  color: #fb7185;
+  border: 1px solid rgba(244, 63, 94, 0.35);
+}
+.badge-purple {
+  background: rgba(168, 85, 247, 0.18);
+  color: #c084fc;
+  border: 1px solid rgba(168, 85, 247, 0.35);
+}
+
+.tile-title {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #fff;
+  margin-bottom: 2px;
+}
+
+.tile-desc {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  line-height: 1.25;
+}
+
+/* Veliki gumb za univerzalno skeniranje na domačem zaslonu */
+.home-scanner-action {
+  margin-bottom: 12px;
+}
+
+.btn-home-main-scanner {
+  width: 100%;
+  min-height: 58px;
+  background: linear-gradient(135deg, #0284c7, #2563eb);
+  border: none;
+  border-radius: var(--radius-md);
+  color: #fff;
+  padding: 10px 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+  text-align: left;
+  box-shadow: 0 4px 16px rgba(2, 132, 199, 0.35);
+  transition: transform 0.1s, filter 0.15s;
+}
+.btn-home-main-scanner:active {
+  transform: scale(0.98);
+  filter: brightness(1.1);
+}
+
+.scanner-btn-icon {
+  font-size: 1.6rem;
+}
+
+.scanner-btn-main {
+  display: block;
+  font-size: 0.95rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.scanner-btn-sub {
+  display: block;
+  font-size: 0.72rem;
+  opacity: 0.88;
+  font-weight: 500;
+}
+
+/* Spodnji sekundarni gumbi domačega zaslona */
+.home-bottom-links {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.btn-home-sublink {
+  flex: 1;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: #cbd5e1;
+  font-size: 0.80rem;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: center;
+  transition: background 0.15s;
+}
+.btn-home-sublink:active {
+  background: rgba(255, 255, 255, 0.09);
+  color: #fff;
+}
+
+/* Poudarjen 1-klik gumb Prenesi na polico */
+.btn-transfer-shelf {
+  background: linear-gradient(135deg, #10b981, #059669) !important;
+  color: #fff !important;
+  font-weight: 800 !important;
+  font-size: 0.86rem !important;
+  min-height: 44px !important;
+  border: none !important;
+  border-radius: var(--radius-sm) !important;
+  box-shadow: 0 3px 10px rgba(16, 185, 129, 0.3) !important;
+  transition: transform 0.1s, filter 0.15s !important;
+}
+.btn-transfer-shelf:active {
+  transform: scale(0.96) !important;
+  filter: brightness(1.15) !important;
+}

@@ -21,15 +21,21 @@
 
   <!-- Glava Aplikacije -->
   <header class="app-header">
-    <div class="logo-area">
-      <div class="logo-icon">
-        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
-          <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
-          <line x1="12" y1="22.08" x2="12" y2="12"></line>
-        </svg>
+    <div style="display: flex; align-items: center; gap: 8px;">
+      <button type="button" class="btn-header-back" id="btnHeaderBackHome" onclick="switchTab('tab-home')" style="display: none;" title="Nazaj na domači zaslon">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"></polyline></svg>
+        <span>Domov</span>
+      </button>
+      <div class="logo-area" id="headerLogoArea" onclick="switchTab('tab-home')" style="cursor: pointer;">
+        <div class="logo-icon">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
+            <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
+            <line x1="12" y1="22.08" x2="12" y2="12"></line>
+          </svg>
+        </div>
+        <div class="app-title" id="headerAppTitle">Skladišče & Trgovina</div>
       </div>
-      <div class="app-title">Skladišče</div>
     </div>
     <div style="display: flex; align-items: center; gap: 8px;">
       <button class="btn-sync-header" id="btnHeaderBLESync" title="Samodejna Bluetooth BLE sinhronizacija (brez Wi-Fi)">
@@ -43,29 +49,175 @@
     </div>
   </header>
 
-  <!-- Glavni vsebinski deli (Tabs) -->
+  <!-- Glavni vsebinski deli (Tabs / Views) -->
   <main id="mainContainer">
 
-    <!-- ZAVIHEK 1: ZALOGA -->
-    <section id="tab-inventory" class="tab-content active">
-      <!-- Hitra statistika -->
-      <div class="stats-bar">
-        <div class="stat-card">
-          <div class="stat-label">Artiklov</div>
-          <div class="stat-val" id="statTotalItems">0</div>
+    <!-- DOMAČI ZASLON (HOME SCREEN / NADZORNA PLOŠČA) -->
+    <section id="tab-home" class="tab-content active" style="padding: 12px 16px;">
+      
+      <!-- Hitra statusna vrstica poslovalnice -->
+      <div class="home-summary-card">
+        <div class="home-summary-header">
+          <span class="home-summary-title">Stanje poslovalnice</span>
+          <span class="home-summary-badge" id="homeSummaryTime">V živo</span>
         </div>
-        <div class="stat-card">
-          <div class="stat-label">Skupaj kos</div>
-          <div class="stat-val" id="statTotalQty">0</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-label">Kritično</div>
-          <div class="stat-val critical" id="statLowStock">0</div>
+        <div class="home-stats-grid">
+          <div class="home-stat-box" onclick="switchTab('tab-inventory')" title="Klikni za pregled zaloge">
+            <span class="home-stat-num" id="homeStatItems">0</span>
+            <span class="home-stat-lbl">Artiklov</span>
+          </div>
+          <div class="home-stat-box" onclick="switchTab('tab-inventory')" title="Klikni za pregled zaloge">
+            <span class="home-stat-num" id="homeStatQty">0</span>
+            <span class="home-stat-lbl">Skupaj kos</span>
+          </div>
+          <div class="home-stat-box warning" onclick="switchTab('tab-replenishment')" title="Klikni za polnjenje polic">
+            <span class="home-stat-num" id="homeStatShelfNeeded">0</span>
+            <span class="home-stat-lbl">Za police</span>
+          </div>
+          <div class="home-stat-box danger" onclick="filterLowStockFromHome()" title="Klikni za kritično zalogo">
+            <span class="home-stat-num" id="homeStatCritical">0</span>
+            <span class="home-stat-lbl">Kritično</span>
+          </div>
         </div>
       </div>
 
-      <!-- Hitri PDF izpisi zaloge, konsolidacija in pomoč pri izdaji -->
-      <div class="pdf-quick-bar">
+      <!-- Aktivna pasica prevzema tovornjaka (če poteka ali je pripravljen) -->
+      <div id="homeReceivingBanner" class="home-receiving-banner" onclick="handleReceivingBannerClick()" title="Klikni za nadaljevanje prevzema">
+        <div class="hr-left">
+          <span class="live-pulse-dot" style="background: #10b981;"></span>
+          <div>
+            <div class="hr-title" id="homeReceivingTitle">Prevzem tovornjaka</div>
+            <div class="hr-sub" id="homeReceivingSub">Razkladanje in OCR štetje škatel 1/2 in 2/2</div>
+          </div>
+        </div>
+        <div class="hr-action">
+          <span class="hr-arrow">➔</span>
+        </div>
+      </div>
+
+      <!-- Mreža glavnih modulov (2 stolpca, velike ploščice za eno roko) -->
+      <div class="home-tiles-grid">
+        
+        <!-- Ploščica 1: Police & Nabiranje -->
+        <div class="home-tile tile-replenishment" onclick="switchTab('tab-replenishment')">
+          <div class="tile-top">
+            <div class="tile-icon-box icon-emerald">🛒</div>
+            <span class="tile-badge badge-warning" id="homeTileRepBadge">0 za dopolnit</span>
+          </div>
+          <div class="tile-title">Police & Nabiranje</div>
+          <div class="tile-desc">Dopolnjevanje trgovine iz kleti</div>
+        </div>
+
+        <!-- Ploščica 2: Prevzem tovornjaka -->
+        <div class="home-tile tile-receiving" onclick="handleReceivingBannerClick()">
+          <div class="tile-top">
+            <div class="tile-icon-box icon-sky">📥</div>
+            <span class="tile-badge badge-info" id="homeTileReceivingBadge">Novo</span>
+          </div>
+          <div class="tile-title">Prevzem pošiljke</div>
+          <div class="tile-desc">OCR skeniranje škatel 1/2 in 2/2</div>
+        </div>
+
+        <!-- Ploščica 3: Zaloga & Regali -->
+        <div class="home-tile tile-inventory" onclick="switchTab('tab-inventory')">
+          <div class="tile-top">
+            <div class="tile-icon-box icon-indigo">📦</div>
+            <span class="tile-badge badge-neutral" id="homeTileInvBadge">Seznam</span>
+          </div>
+          <div class="tile-title">Zaloga & Regali</div>
+          <div class="tile-desc">Iskanje artiklov in kartice</div>
+        </div>
+
+        <!-- Ploščica 4: Izdaja kupcu po računu -->
+        <div class="home-tile tile-dispatch" onclick="showReceiptDispatchPicker()">
+          <div class="tile-top">
+            <div class="tile-icon-box icon-amber">🧾</div>
+            <span class="tile-badge badge-amber">Kupci</span>
+          </div>
+          <div class="tile-title">Izdaja po računu</div>
+          <div class="tile-desc">Vodenje po regalih ob nakupu</div>
+        </div>
+
+        <!-- Ploščica 5: Mešane škatle -->
+        <div class="home-tile tile-mixed" onclick="openMixedBoxesModal()">
+          <div class="tile-top">
+            <div class="tile-icon-box icon-cyan">📦</div>
+            <span class="tile-badge badge-cyan" id="homeTileMixedBadge">0</span>
+          </div>
+          <div class="tile-title">Mešane škatle</div>
+          <div class="tile-desc">Soft tekstil + tisk etiket 6×6</div>
+        </div>
+
+        <!-- Ploščica 6: Inventura -->
+        <div class="home-tile tile-audit" onclick="switchTab('tab-audit')">
+          <div class="tile-top">
+            <div class="tile-icon-box icon-rose">📋</div>
+            <span class="tile-badge badge-rose">Popis</span>
+          </div>
+          <div class="tile-title">Inventura</div>
+          <div class="tile-desc">Štetje in popravki po regalih</div>
+        </div>
+
+        <!-- Ploščica 7: Konsolidacija zaloge -->
+        <div class="home-tile tile-consolidation" onclick="openConsolidationModal()">
+          <div class="tile-top">
+            <div class="tile-icon-box icon-purple">🔄</div>
+            <span class="tile-badge badge-purple" id="homeTileConsolBadge">0</span>
+          </div>
+          <div class="tile-title">Konsolidacija</div>
+          <div class="tile-desc">Združevanje razpršenih škatel</div>
+        </div>
+
+        <!-- Ploščica 8: Dnevnik premikov -->
+        <div class="home-tile tile-history" onclick="switchTab('tab-history')">
+          <div class="tile-top">
+            <div class="tile-icon-box icon-slate">📜</div>
+            <span class="tile-badge badge-neutral">Sled</span>
+          </div>
+          <div class="tile-title">Dnevnik premikov</div>
+          <div class="tile-desc">Revizijska sled vseh dejanj</div>
+        </div>
+
+      </div>
+
+      <!-- Veliki gumb za univerzalni kamerski skener (1 dotik) -->
+      <div class="home-scanner-action">
+        <button type="button" class="btn-home-main-scanner" onclick="openQuickCameraScanner('search')">
+          <span class="scanner-btn-icon">📷</span>
+          <div class="scanner-btn-text">
+            <span class="scanner-btn-main">Hitri skener s kamero</span>
+            <span class="scanner-btn-sub">Branje črtnih kod, šifer regalov ali računov (1 dotik)</span>
+          </div>
+        </button>
+      </div>
+
+      <!-- Hitre sekundarne povezave na dnu domačega zaslona -->
+      <div class="home-bottom-links">
+        <button type="button" class="btn-home-sublink" onclick="openAddItemModal()">
+          ➕ Nov artikel
+        </button>
+        <button type="button" class="btn-home-sublink" onclick="switchTab('tab-settings')">
+          ⚙️ Nastavitve & PDF
+        </button>
+      </div>
+
+    </section>
+
+    <!-- ZAVIHEK 1: ZALOGA -->
+    <section id="tab-inventory" class="tab-content" style="display: none; padding: 12px 16px;">
+      <!-- Navigacijski vrh modula Zaloga -->
+      <div class="view-header-bar" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+        <button type="button" class="btn-subview-back" onclick="switchTab('tab-home')">
+          ← Domov
+        </button>
+        <span style="font-weight: 700; font-size: 1rem; color: #fff;">Zaloga po regalih</span>
+        <button type="button" class="btn-primary" onclick="openAddItemModal()" style="margin: 0; width: auto; padding: 7px 12px; font-size: 0.8rem; font-weight: 700; background: linear-gradient(135deg, #0284c7, #2563eb);">
+          + Nov
+        </button>
+      </div>
+
+      <!-- Hitri PDF izpisi zaloge, konsolidacija in pomoč pri izdaji (Skrito v zavihku, dostopno prek Domačega zaslona) -->
+      <div class="pdf-quick-bar" style="display: none;">
         <button type="button" class="btn-pdf-pill" id="btnOpenMixedBoxesPill" onclick="openMixedBoxesModal()" style="border-color: #38bdf8; color: #38bdf8; background: rgba(56, 189, 248, 0.12);" title="Pregled in pakiranje mešanih škatel">
           📦 Mešane (<span id="mixedBoxesBadge">0</span>)
         </button>
@@ -146,11 +298,12 @@
 
     <!-- ZAVIHEK 2: OPTIČNI ČITALNIK ŠKATEL (OCR) -->
     <section id="tab-scanner" class="tab-content scanner-section">
-      <div style="text-align: center; margin-bottom: 6px;">
-        <h2 style="font-size: 1.15rem; font-weight: 700;">Skeniranje škatel</h2>
-        <p style="font-size: 0.78rem; color: var(--text-muted);">
-          Skeniranje etiket artiklov in škatel
-        </p>
+      <div class="view-header-bar" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; width: 100%; max-width: 420px; margin-left: auto; margin-right: auto;">
+        <button type="button" class="btn-subview-back" onclick="switchTab('tab-home')">
+          ← Domov
+        </button>
+        <span style="font-weight: 700; font-size: 1rem; color: #fff;">Skeniranje škatel</span>
+        <div style="width: 65px;"></div>
       </div>
 
       <!-- Aktivni regal in polica (samodejno prevzeto prek QR kode ali ročno) -->
@@ -233,16 +386,18 @@
     </section>
 
     <!-- ZAVIHEK: POLICE & NABIRANJE (REPLENISHMENT) -->
-    <section id="tab-replenishment" class="tab-content" style="display: none; padding: 16px;">
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; gap: 8px;">
-        <div>
-          <h2 style="font-size: 1.15rem; margin-bottom: 2px;">Police & Nabiranje</h2>
-          <div style="font-size: 0.78rem; color: var(--text-muted);">
-            Dopolnjevanje prodajnih polic iz skladišča
+    <section id="tab-replenishment" class="tab-content" style="display: none; padding: 12px 16px;">
+      <div class="view-header-bar" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; gap: 8px;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <button type="button" class="btn-subview-back" onclick="switchTab('tab-home')">
+            ← Domov
+          </button>
+          <div>
+            <h2 style="font-size: 1.05rem; margin: 0;">Police & Nabiranje</h2>
           </div>
         </div>
-        <button type="button" class="btn-pdf-pill" onclick="openMixedBoxesModal()" style="border-color: #38bdf8; color: #38bdf8; background: rgba(56, 189, 248, 0.12);" title="Pregled mešanih škatel">
-          📦 Mešane škatle (<span id="repMixedBoxesCount">0</span>)
+        <button type="button" class="btn-pdf-pill" onclick="openMixedBoxesModal()" style="border-color: #38bdf8; color: #38bdf8; background: rgba(56, 189, 248, 0.12); margin: 0;" title="Pregled mešanih škatel">
+          📦 Mešane (<span id="repMixedBoxesCount">0</span>)
         </button>
       </div>
 
@@ -328,15 +483,17 @@
     </section>
 
     <!-- ZAVIHEK 3: INVENTURNI POPIS (AUDIT) -->
-    <section id="tab-audit" class="tab-content" style="display: none; padding: 16px;">
+    <section id="tab-audit" class="tab-content" style="display: none; padding: 12px 16px;">
       <!-- Naslov z orodno vrstico -->
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; gap: 8px;">
-        <div>
-          <h2 style="font-size: 1.15rem; margin-bottom: 2px;">Inventura zaloge</h2>
-          <div style="font-size: 0.78rem; color: var(--text-muted);">Popis stanja, primerjava in uskladitev</div>
+      <div class="view-header-bar" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; gap: 8px;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <button type="button" class="btn-subview-back" onclick="switchTab('tab-home')">
+            ← Domov
+          </button>
+          <h2 style="font-size: 1.05rem; margin: 0;">Inventura zaloge</h2>
         </div>
-        <button class="chip" id="btnResetAuditSession" title="Začni nov popis iz trenutne zaloge" style="display: flex; align-items: center; gap: 4px; border-color: rgba(239, 68, 68, 0.4); color: #f87171;">
-          Ponastavi popis
+        <button class="chip" id="btnResetAuditSession" title="Začni nov popis iz trenutne zaloge" style="display: flex; align-items: center; gap: 4px; border-color: rgba(239, 68, 68, 0.4); color: #f87171; margin: 0;">
+          Ponastavi
         </button>
       </div>
 
@@ -403,10 +560,15 @@
     </section>
 
     <!-- ZAVIHEK 4: DNEVNIK PREMIKOV -->
-    <section id="tab-history" class="tab-content" style="display: none; padding: 16px;">
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
-        <h2 style="font-size: 1.1rem;">Zgodovina premikov</h2>
-        <button class="chip" id="btnClearLogs">Počisti zgodovino</button>
+    <section id="tab-history" class="tab-content" style="display: none; padding: 12px 16px;">
+      <div class="view-header-bar" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <button type="button" class="btn-subview-back" onclick="switchTab('tab-home')">
+            ← Domov
+          </button>
+          <h2 style="font-size: 1.05rem; margin: 0;">Zgodovina premikov</h2>
+        </div>
+        <button class="chip" id="btnClearLogs" style="margin: 0;">Počisti</button>
       </div>
       <div id="logsList" style="display: flex; flex-direction: column; gap: 10px;">
         <!-- Dinamični zapisi premikov -->
@@ -414,8 +576,15 @@
     </section>
 
     <!-- ZAVIHEK 5: NASTAVITVE & PODATKI -->
-    <section id="tab-settings" class="tab-content" style="display: none; padding: 16px;">
-      <h2 style="font-size: 1.1rem; margin-bottom: 14px;">Podatki in nastavitve</h2>
+    <section id="tab-settings" class="tab-content" style="display: none; padding: 12px 16px;">
+      <div class="view-header-bar" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <button type="button" class="btn-subview-back" onclick="switchTab('tab-home')">
+            ← Domov
+          </button>
+          <h2 style="font-size: 1.05rem; margin: 0;">Nastavitve & Podatki</h2>
+        </div>
+      </div>
 
       <!-- Brezžična BLE sinhronizacija -->
       <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 16px; margin-bottom: 16px;">
@@ -536,8 +705,8 @@
 
   </main>
 
-  <!-- Spodnja navigacijska vrstica -->
-  <nav class="bottom-nav">
+  <!-- Spodnja navigacijska vrstica (Skrita v korist Domačega zaslona z velikimi ploščicami) -->
+  <nav class="bottom-nav" style="display: none;">
     <button class="nav-tab active" data-tab="tab-inventory">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>

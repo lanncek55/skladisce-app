@@ -117,6 +117,29 @@ window.switchTab = function(targetId) {
     targetEl.classList.add('active');
   }
 
+  // Preklopi gumb Nazaj in naslov v glavi
+  const btnBack = document.getElementById('btnHeaderBackHome');
+  const appTitle = document.getElementById('headerAppTitle');
+
+  if (targetId === 'tab-home') {
+    if (btnBack) btnBack.style.display = 'none';
+    if (appTitle) appTitle.textContent = 'Skladišče & Trgovina';
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    updateHomeDashboard();
+  } else {
+    if (btnBack) btnBack.style.display = 'inline-flex';
+    const titles = {
+      'tab-inventory': 'Zaloga & Regali',
+      'tab-replenishment': 'Police & Nabiranje',
+      'tab-scanner': 'Čitalnik škatel',
+      'tab-audit': 'Inventura zaloge',
+      'tab-history': 'Zgodovina premikov',
+      'tab-settings': 'Nastavitve & Podatki'
+    };
+    if (appTitle) appTitle.textContent = titles[targetId] || 'Skladišče';
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
   // Če zapustimo čitalnik, ugasnemo kamero za varčevanje z baterijo
   if (targetId !== 'tab-scanner') {
     stopCamera();
@@ -126,7 +149,9 @@ window.switchTab = function(targetId) {
   }
 
   // Osveži podatke za ustrezen zavihek
-  if (targetId === 'tab-inventory') {
+  if (targetId === 'tab-home') {
+    updateHomeDashboard();
+  } else if (targetId === 'tab-inventory') {
     refreshInventory();
   } else if (targetId === 'tab-replenishment') {
     refreshReplenishmentTab();
@@ -137,6 +162,116 @@ window.switchTab = function(targetId) {
   } else if (targetId === 'tab-settings') {
     renderSettingsWarehouses();
   }
+};
+
+window.updateHomeDashboard = async function() {
+  try {
+    const items = (typeof cachedItems !== 'undefined' && cachedItems && cachedItems.length > 0)
+      ? cachedItems
+      : await DB.getAllItems();
+
+    const totalItems = items.length;
+    let totalQty = 0;
+    let neededForShelfCount = 0;
+    let criticalCount = 0;
+
+    for (const it of items) {
+      totalQty += Number(it.quantity) || 0;
+      if ((Number(it.neededForShelf) || 0) > 0) {
+        neededForShelfCount++;
+      }
+      const minQ = Number(it.minQuantity) || 0;
+      if (minQ > 0 && (Number(it.quantity) || 0) <= minQ) {
+        criticalCount++;
+      }
+    }
+
+    const statItemsEl = document.getElementById('homeStatItems');
+    const statQtyEl = document.getElementById('homeStatQty');
+    const statShelfEl = document.getElementById('homeStatShelfNeeded');
+    const statCritEl = document.getElementById('homeStatCritical');
+
+    if (statItemsEl) statItemsEl.textContent = totalItems.toLocaleString('sl-SI');
+    if (statQtyEl) statQtyEl.textContent = totalQty.toLocaleString('sl-SI');
+    if (statShelfEl) statShelfEl.textContent = neededForShelfCount;
+    if (statCritEl) statCritEl.textContent = criticalCount;
+
+    // Značke na ploščicah
+    const repList = await DB.getReplenishmentList('pending');
+    const repTileBadge = document.getElementById('homeTileRepBadge');
+    if (repTileBadge) {
+      const pendingCount = (repList && repList.length) ? repList.length : neededForShelfCount;
+      if (pendingCount > 0) {
+        repTileBadge.textContent = `${pendingCount} za dopolnit`;
+        repTileBadge.className = 'tile-badge badge-warning';
+      } else {
+        repTileBadge.textContent = 'Vse polno';
+        repTileBadge.className = 'tile-badge badge-success';
+      }
+    }
+
+    // Mešane škatle
+    const mixedBoxes = await DB.getAllMixedBoxes();
+    const mixedTileBadge = document.getElementById('homeTileMixedBadge');
+    if (mixedTileBadge) {
+      mixedTileBadge.textContent = `${mixedBoxes.length} škatel`;
+    }
+
+    // Konsolidacija
+    const scattered = await DB.getScatteredItems();
+    const consolTileBadge = document.getElementById('homeTileConsolBadge');
+    if (consolTileBadge) {
+      if (scattered.length > 0) {
+        consolTileBadge.textContent = `${scattered.length} razpršenih`;
+        consolTileBadge.className = 'tile-badge badge-warning';
+      } else {
+        consolTileBadge.textContent = '0';
+        consolTileBadge.className = 'tile-badge badge-neutral';
+      }
+    }
+
+    // Prevzem tovornjaka
+    const recBanner = document.getElementById('homeReceivingBanner');
+    const recTitle = document.getElementById('homeReceivingTitle');
+    const recSub = document.getElementById('homeReceivingSub');
+    const recTileBadge = document.getElementById('homeTileReceivingBadge');
+
+    if (typeof getActiveReceivingSession === 'function') {
+      const session = getActiveReceivingSession();
+      if (session && session.active) {
+        const entries = Array.isArray(session.entries) ? session.entries : [];
+        const totalBoxes = entries.reduce((sum, e) => sum + (Number(e.count) || 0), 0);
+        if (recBanner) recBanner.classList.add('active');
+        if (recTitle) recTitle.textContent = `Prevzem tovornjaka (${totalBoxes} škatel)`;
+        if (recSub) recSub.textContent = 'Klikni za nadaljevanje skeniranja ali zaključek';
+        if (recTileBadge) {
+          recTileBadge.textContent = `${totalBoxes} škatel`;
+          recTileBadge.className = 'tile-badge badge-success';
+        }
+      } else {
+        if (recBanner) recBanner.classList.remove('active');
+        if (recTileBadge) {
+          recTileBadge.textContent = 'Novo';
+          recTileBadge.className = 'tile-badge badge-info';
+        }
+      }
+    }
+
+    const timeEl = document.getElementById('homeSummaryTime');
+    if (timeEl) {
+      const now = new Date();
+      timeEl.textContent = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+    }
+
+  } catch (err) {
+    console.error('Napaka pri posodabljanju domačega zaslona:', err);
+  }
+};
+
+window.filterLowStockFromHome = function() {
+  window.switchTab('tab-inventory');
+  const chipLow = document.querySelector('#categoryChips button[data-filter="low"]');
+  if (chipLow) chipLow.click();
 };
 
 function setupTabNavigation() {
@@ -195,6 +330,7 @@ async function refreshInventory() {
     updateReceivingBannerUI();
     if (typeof updateConsolidationBadge === 'function') updateConsolidationBadge();
     if (typeof updateMixedBoxesBadges === 'function') updateMixedBoxesBadges();
+    if (typeof updateHomeDashboard === 'function') updateHomeDashboard();
   } catch (err) {
     console.error('Napaka pri branju zaloge:', err);
     showToast('Napaka pri branju podatkov.');
