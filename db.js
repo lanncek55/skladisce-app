@@ -1173,6 +1173,50 @@ const DB = {
         shelf: 'Regal D-01',
         count: 8,
         notes: 'Pomožni artikel za račune'
+      },
+      {
+        sku: '3601370',
+        name: 'Zložljiv stol VOEL žamet temno siva',
+        category: 'Stoli & Mize',
+        boxTotal: 1,
+        minQuantity: 2,
+        unit: 'kos',
+        shelf: 'Regal S-01',
+        count: 6,
+        notes: 'Zložljivi stoli (Zgornje skladišče)'
+      },
+      {
+        sku: '3600634',
+        name: 'Računalniška miza HALSTED 60x120 črna',
+        category: 'Pohištvo',
+        boxTotal: 1,
+        minQuantity: 1,
+        unit: 'kos',
+        shelf: 'Regal M-02',
+        count: 4,
+        notes: 'Pisarniške in računalniške mize'
+      },
+      {
+        sku: '3680079',
+        name: 'Gaming stol RANDRUP črno umetno usnje/mr',
+        category: 'Pohištvo',
+        boxTotal: 1,
+        minQuantity: 1,
+        unit: 'kos',
+        shelf: 'Regal S-04',
+        count: 3,
+        notes: 'Gaming stoli v škatlah'
+      },
+      {
+        sku: '3600628',
+        name: 'Klubska mizica RANDERUP Ø47 črna',
+        category: 'Pohištvo',
+        boxTotal: 1,
+        minQuantity: 2,
+        unit: 'kos',
+        shelf: 'Regal M-05',
+        count: 5,
+        notes: 'Klubske mizice'
       }
     ];
 
@@ -1236,7 +1280,7 @@ const DB = {
   },
 
   async ensureReceiptDemoItems() {
-    const requiredSKUs = ['3618930', '3670619'];
+    const requiredSKUs = ['3618930', '3670619', '3601370', '3600634', '3680079', '3600628'];
     for (const sku of requiredSKUs) {
       const item = await this.getItemBySKU(sku);
       if (!item) {

@@ -4,6 +4,28 @@
 
 (function(global) {
   const WarehouseLabelParser = {
+    knownCatalog: {
+    '3651003': { name: 'Mirror SANDAGER 3 pcs/pk oak', pieces: 3, box: 'Box 1/1' },
+    '3690514': { name: 'Dining chair ADSLEV beige/n.oak', pieces: 2, box: 'Box 1/1' },
+    '3690565': { name: 'Mirror BALSLEV 35x127 w.oak', pieces: 4, box: 'Box 1/1' },
+    '3725150': { name: 'Garden chair FJELLERUP', pieces: 4, box: 'Box 1/1' },
+    '37251550': { name: 'Garden chair FJELLERUP', pieces: 4, box: 'Box 1/1' },
+    '3725155': { name: 'Garden chair FJELLERUP', pieces: 4, box: 'Box 1/1' },
+    '3759803': { name: 'Stacking chair LARVIK grey', pieces: 24, box: 'Box 1/1' },
+    '4334604': { name: 'ULVIK 50x70 cm', pieces: 12, box: 'Box 1/1' },
+    '4318500': { name: 'PIL VANSE foam 30x47', pieces: 8, box: 'Box 1/1' },
+    '3650189': { name: 'Pouffe AARS Dark Sand', pieces: 3, box: 'Box 1/1' },
+    '3446278': { name: 'TM VINGAN 160x200cm', pieces: 1, box: 'Box 1/1' },
+    '3610115': { name: 'Pedestal LYNGVIG Ø35 d.oak', pieces: 1, box: 'Box 1/1' },
+    '3726157': { name: 'JYSK Artikel 3726157', pieces: 1, box: 'Box 1/1' },
+    '3618930': { name: 'Predalnik LIMFJORDEN 4 predali bela', pieces: 1, box: 'Box 1/1' },
+    '3670619': { name: 'DIVERSES', pieces: 1, box: 'Box 1/1' },
+    '3601370': { name: 'Zložljiv stol VOEL žamet temno siva', pieces: 1, box: 'Box 1/1' },
+    '3600634': { name: 'Računalniška miza HALSTED 60x120 črna', pieces: 1, box: 'Box 1/1' },
+    '3680079': { name: 'Gaming stol RANDRUP črno umetno usnje/mr', pieces: 1, box: 'Box 1/1' },
+    '3600628': { name: 'Klubska mizica RANDERUP Ø47 črna', pieces: 1, box: 'Box 1/1' }
+  },
+
   /**
    * Zazna in razčleni trgovski račun (npr. JYSK račun z več artikli)
    * @param {string} rawText
@@ -13,7 +35,8 @@
     if (!rawText || typeof rawText !== 'string') return null;
     const lines = rawText.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
 
-    const receiptKeywords = /racun|ra[cč]un|st\.?\s*ra[cč]|št\.?\s*ra[cč]|blagajn|skupaj|ddv|tovarni[sš]ka|bre[zž]ice|celov[sš]ka|prevzem|eft|trgovina\s*d\.?o\.?o/i;
+    // Natančne ključne besede za prepoznavo računa z mejami besed (preprečuje lažno ujemanje z 'računalniška miza'!)
+    const receiptKeywords = /\b(?:ra[cč]un(?:a|om|u)?|st\.?\s*ra[cč]|št\.?\s*ra[cč]|blagajn[aei]?|skupaj|ddv|tovarni[sš]ka|bre[zž]ice|celov[sš]ka|prevzem|eft|trgovina\s*d\.?o\.?o)\b/i;
     const hasKeyword = receiptKeywords.test(rawText);
 
     const receiptNoMatch = rawText.match(/(?:št\.?|st\.?)\s*ra[cč](?:un)?(?:\/storno)?[\s.:]*([0-9a-zA-Z\-]+)/i);
@@ -30,39 +53,72 @@
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
 
-      const artMatch = line.match(/(?:artikel|art\.?|šifra|sifra|koda)?[\s.:]*\b([0-9]{7})\b/i);
+      const artMatch = line.match(/(?:artikel|art\.?|šifra|sifra|koda)?[\s.:]*\b([0-9]{7,8})\b/i);
       const hasArtWord = /(?:artikel|art\.?|šifra|sifra|koda)/i.test(line);
       const priceMatch = line.match(/([0-9]+[.,][0-9]{2})\s*(?:€|e|eur)?/i);
 
       if (artMatch && (hasArtWord || (priceMatch && hasKeyword))) {
         const sku = artMatch[1];
+        let qty = 1;
+        let unitPrice = '';
+        let totalPrice = priceMatch ? priceMatch[1] : '';
 
+        // Preveri količino v isti vrstici (npr. "Artikel 3601370 2x 27.00")
+        const inlineQtyMatch = line.match(/\b([0-9]+)\s*(?:x|kom|kos|pcs)\b/i);
+        if (inlineQtyMatch) {
+          qty = parseInt(inlineQtyMatch[1], 10) || 1;
+        }
+
+        // Iščemo naziv artikla in ločeno vrstico s količino ter ceno (npr. "2 x 13.50") nad vrstico artikla
         let name = '';
-        if (i > 0) {
-          const prev = lines[i - 1];
-          if (!receiptKeywords.test(prev) && !prev.match(/artikel|cena|popust|koda|količina/i) && prev.length > 2) {
-            name = prev;
+        for (let back = 1; back <= 3 && (i - back) >= 0; back++) {
+          const candidate = lines[i - back];
+
+          // 1. Preveri, ali je to vrstica količine in cene na kos (npr. "2 x 13.50" ali "2x 13,50")
+          const qtyPriceLine = candidate.match(/^([0-9]+)\s*[xX*]\s*([0-9]+[.,][0-9]{2})/);
+          if (qtyPriceLine) {
+            qty = parseInt(qtyPriceLine[1], 10) || 1;
+            unitPrice = qtyPriceLine[2].replace(',', '.');
+            continue; // Pomembno: Naziv artikla je vrstico višje, nadaljuj iskanje!
+          }
+
+          // 2. Prekini iskanje navzgor, če zadanemo drug artikel ali skupne postavke
+          if (/(?:artikel|art\.?|šifra|sifra|koda)\s*[0-9]{7,8}/i.test(candidate)) break;
+          if (/^(?:skupaj|ddv|neto|popust|znesek|cena|vrnjen|plačano|eft)\b/i.test(candidate)) break;
+          if (receiptKeywords.test(candidate) && candidate.length < 35) continue;
+
+          // 3. Veljaven naziv artikla (ni zgolj številka, cena ali kratek šum)
+          if (candidate.length > 2 && !/^[0-9.,\s€e\-\*\/]+$/i.test(candidate)) {
+            // Počisti OCR napake kot so '?47' v premer 'Ø47'
+            name = candidate.replace(/\?(\d+)/g, 'Ø$1').replace(/^\?\s*/, 'Ø');
+            break;
           }
         }
+
         if (!name) {
           const cleanedLine = line.replace(/(?:artikel|art\.?|šifra|sifra|koda)/gi, '').replace(sku, '').replace(/[0-9]+[.,][0-9]{2}\s*(?:€|e|eur)?/gi, '').trim();
           if (cleanedLine.length > 3) name = cleanedLine;
         }
+        if (!name || name === 'Artikel ' + sku) {
+          if (WarehouseLabelParser.knownCatalog && WarehouseLabelParser.knownCatalog[sku]) {
+            name = WarehouseLabelParser.knownCatalog[sku].name;
+          }
+        }
         if (!name) name = 'Artikel ' + sku;
 
-        let qty = 1;
-        const qtyMatch = line.match(/([0-9]+)\s*(?:x|kom|kos|pcs)\b/i);
-        if (qtyMatch) {
-          qty = parseInt(qtyMatch[1], 10) || 1;
-        }
-
-        const price = priceMatch ? priceMatch[1] : '';
+        const finalPrice = unitPrice || totalPrice;
 
         if (itemsMap.has(sku)) {
           const existing = itemsMap.get(sku);
           existing.qty += qty;
         } else {
-          itemsMap.set(sku, { sku, name, qty, price });
+          itemsMap.set(sku, { 
+            sku, 
+            name, 
+            qty, 
+            price: finalPrice, 
+            totalPrice: totalPrice || finalPrice 
+          });
         }
       }
     }
@@ -115,23 +171,7 @@
     }
 
     // Vgrajen referenčni katalog pogostih artiklov
-    const knownCatalog = {
-      '3651003': { name: 'Mirror SANDAGER 3 pcs/pk oak', pieces: 3, box: 'Box 1/1' },
-      '3690514': { name: 'Dining chair ADSLEV beige/n.oak', pieces: 2, box: 'Box 1/1' },
-      '3690565': { name: 'Mirror BALSLEV 35x127 w.oak', pieces: 4, box: 'Box 1/1' },
-      '3725150': { name: 'Garden chair FJELLERUP', pieces: 4, box: 'Box 1/1' },
-      '37251550': { name: 'Garden chair FJELLERUP', pieces: 4, box: 'Box 1/1' },
-      '3725155': { name: 'Garden chair FJELLERUP', pieces: 4, box: 'Box 1/1' },
-      '3759803': { name: 'Stacking chair LARVIK grey', pieces: 24, box: 'Box 1/1' },
-      '4334604': { name: 'ULVIK 50x70 cm', pieces: 12, box: 'Box 1/1' },
-      '4318500': { name: 'PIL VANSE foam 30x47', pieces: 8, box: 'Box 1/1' },
-      '3650189': { name: 'Pouffe AARS Dark Sand', pieces: 3, box: 'Box 1/1' },
-      '3446278': { name: 'TM VINGAN 160x200cm', pieces: 1, box: 'Box 1/1' },
-      '3610115': { name: 'Pedestal LYNGVIG Ø35 d.oak', pieces: 1, box: 'Box 1/1' },
-      '3726157': { name: 'JYSK Artikel 3726157', pieces: 1, box: 'Box 1/1' },
-      '3618930': { name: 'Predalnik LIMFJORDEN 4 predali bela', pieces: 1, box: 'Box 1/1' },
-      '3670619': { name: 'DIVERSES', pieces: 1, box: 'Box 1/1' }
-    };
+    const knownCatalog = WarehouseLabelParser.knownCatalog || {};
 
     function sanitizeNum(s) {
       if (!s) return '';
