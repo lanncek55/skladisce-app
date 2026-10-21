@@ -3136,17 +3136,14 @@ window.triggerHighResSensorCapture = async function() {
       // Posnemi neposredno s senzorja z maksimalno ločljivostjo 4096x3072
       const blob = await ic.takePhoto({ imageWidth: 4096, imageHeight: 3072 });
       const imgBitmap = await createImageBitmap(blob);
-      const canvas = document.createElement('canvas');
-      canvas.width = imgBitmap.width;
-      canvas.height = imgBitmap.height;
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(imgBitmap, 0, 0);
 
+      // Hierarhični izrez: najdi lokacijo etikete na nizki ločljivosti in izreži iz polne 4K ločljivosti
+      const { canvas } = extractHierarchicalLabelCrop(imgBitmap);
       await processImageWithOCR(canvas);
       return;
     }
 
-    // Fallback: zajem polnega okvirja iz videa z naravno ločljivostjo
+    // Fallback: zajem okvirja iz videa z naravno ločljivostjo
     const { canvas } = getCroppedCanvasFromVideo(video);
     await processImageWithOCR(canvas);
   } catch (err) {
@@ -3213,33 +3210,116 @@ function stopCamera() {
 }
 
 /**
- * Izreže območje vizirja za škatlo v POLNI IZVORNI LOČLJIVOSTI senzorja brez zmanjševanja!
- * Zagotavlja 100% ostrino mikroskopskih napisov (Box 1/1, 2 pcs ipd.)
+ * DVOSTOPENJSKI HIERARHIČNI ZAJEM (Coarse-to-Fine):
+ * 1. Nizkoresolucijska analiza (480p) za avtomatsko določitev lokacije etikete / besedila na škatli
+ * 2. 1:1 polnoresolucijski izrez (odrez nepomembnih delov) za maksimalno ostrino OCR
+ */
+function extractHierarchicalLabelCrop(source) {
+  const fullW = source.videoWidth || source.naturalWidth || source.width || 1920;
+  const fullH = source.videoHeight || source.naturalHeight || source.height || 1080;
+
+  // 1. KORAK: Hitri nizkoresolucijski okvir (Coarse frame na 480px širine)
+  const lowScale = Math.min(1.0, 480 / fullW);
+  const lowW = Math.round(fullW * lowScale);
+  const lowH = Math.round(fullH * lowScale);
+
+  const lowCanvas = document.createElement('canvas');
+  lowCanvas.width = lowW;
+  lowCanvas.height = lowH;
+  const lowCtx = lowCanvas.getContext('2d', { willReadFrequently: true });
+  lowCtx.drawImage(source, 0, 0, lowW, lowH);
+
+  // A) Hitra detekcija bele / svetle nalepke na temnejši podlagi (White label quad)
+  let targetBox = detectWhiteLabelBounds(lowCanvas, lowCtx, lowScale, fullW, fullH);
+
+  // B) Če bela nalepka ni očitna (npr. bela embalaža ali mehak kontrast),
+  // uporabimo sredinski vizir z 20% varnostnim robom
+  if (!targetBox) {
+    const zoomFactor = currentZoomFactor || 1.0;
+    const baseW = Math.round(fullW * 0.78 / zoomFactor);
+    const baseH = Math.round(fullH * 0.52 / zoomFactor);
+    const cropX = Math.round((fullW - baseW) / 2);
+    const cropY = Math.round((fullH - baseH) / 2);
+    targetBox = { cropX, cropY, cropW: baseW, cropH: baseH };
+  }
+
+  // 2. KORAK: Izrez iz POLNE izvorne ločljivosti senzorja (1:1 piksli brez stiskanja)
+  const highCanvas = document.createElement('canvas');
+  highCanvas.width = targetBox.cropW;
+  highCanvas.height = targetBox.cropH;
+  const highCtx = highCanvas.getContext('2d', { willReadFrequently: true });
+  highCtx.drawImage(source, targetBox.cropX, targetBox.cropY, targetBox.cropW, targetBox.cropH, 0, 0, targetBox.cropW, targetBox.cropH);
+
+  const hasContent = preprocessAndCheckContrast(highCanvas, highCtx);
+
+  return { canvas: highCanvas, hasContent, targetBox };
+}
+
+/**
+ * Pomožna funkcija: detekcija območja bele nalepke na nizkoresolucijskem okvirju
+ */
+function detectWhiteLabelBounds(canvas, ctx, scale, fullW, fullH) {
+  try {
+    const w = canvas.width;
+    const h = canvas.height;
+    const imgData = ctx.getImageData(0, 0, w, h);
+    const d = imgData.data;
+
+    let minX = w, maxX = 0, minY = h, maxY = 0;
+    let whitePixelCount = 0;
+    const step = 4; // Hitro vzorčenje vsakih 4 pikslov (< 2 ms)
+
+    for (let y = 0; y < h; y += step) {
+      for (let x = 0; x < w; x += step) {
+        const idx = (y * w + x) * 4;
+        const r = d[idx];
+        const g = d[idx + 1];
+        const b = d[idx + 2];
+
+        // Svetla / bela nalepka: svetlost > 145 in nizka nasičenost
+        const maxC = Math.max(r, g, b);
+        const minC = Math.min(r, g, b);
+        const isBright = (r + g + b) / 3 > 145;
+        const isLowSaturation = (maxC - minC) < 45;
+
+        if (isBright && isLowSaturation) {
+          whitePixelCount++;
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+      }
+    }
+
+    const totalSampled = (w / step) * (h / step);
+    const whiteRatio = whitePixelCount / totalSampled;
+
+    // Če bela površina predstavlja med 8% in 80% površine in ima smiselno dimenzijo
+    if (whiteRatio >= 0.08 && whiteRatio <= 0.80 && maxX > minX + 45 && maxY > minY + 30) {
+      const bw = maxX - minX;
+      const bh = maxY - minY;
+      const padX = bw * 0.15; // 15% varnostni rob
+      const padY = bh * 0.15;
+
+      const cropX = Math.max(0, Math.round((minX - padX) / scale));
+      const cropY = Math.max(0, Math.round((minY - padY) / scale));
+      const cropW = Math.min(fullW - cropX, Math.round((bw + 2 * padX) / scale));
+      const cropH = Math.min(fullH - cropY, Math.round((bh + 2 * padY) / scale));
+
+      if (cropW > 150 && cropH > 100) {
+        return { cropX, cropY, cropW, cropH };
+      }
+    }
+  } catch (e) {}
+  return null;
+}
+
+/**
+ * Izreže območje vizirja za škatlo v POLNI IZVORNI LOČLJIVOSTI senzorja
  */
 function getCroppedCanvasFromVideo(video) {
-  const canvas = document.createElement('canvas');
-  const ctx = canvas.getContext('2d', { willReadFrequently: true });
-
-  const vw = video.videoWidth || 1920;
-  const vh = video.videoHeight || 1080;
-
-  const zoomFactor = currentZoomFactor || 1.0;
-  const baseCropW = Math.round(vw * 0.76);
-  const baseCropH = Math.round(vh * 0.46);
-
-  const cropW = Math.round(baseCropW / zoomFactor);
-  const cropH = Math.round(baseCropH / zoomFactor);
-  const cropX = Math.round((vw - cropW) / 2);
-  const cropY = Math.round((vh - cropH) / 2);
-
-  // Polna izvorna ločljivost senzorja brez zmanjševanja na 1000px!
-  canvas.width = cropW;
-  canvas.height = cropH;
-  ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
-
-  const hasContent = preprocessAndCheckContrast(canvas, ctx);
-
-  return { canvas, hasContent };
+  return extractHierarchicalLabelCrop(video);
 }
 
 /**
