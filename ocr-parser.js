@@ -277,6 +277,22 @@
       let skuScore = 0;
       let skuLineIdx = -1;
 
+      // 0. PRED-ANALIZA: Poišči EAN / črtno kodo na etiketi, da jo izločimo iz kandidatov za SKU
+      let labelBarcode = '';
+      for (const line of lines) {
+        const bm = line.match(/(?:barcode|ean)[\s.:]*([0-9\s]{8,15})/i);
+        if (bm) {
+          labelBarcode = bm[1].replace(/\s+/g, '');
+          break;
+        }
+      }
+
+      function isBarcodePrefix(cand) {
+        if (!cand) return false;
+        if (labelBarcode && labelBarcode.startsWith(cand)) return true;
+        return false;
+      }
+
       // 1. ISKANJE ŠIFRE ARTIKLA (SKU)
       // Nivo 1 (+95): Izrecna oznaka (JYSK product no., Article, Artikel, Item no., SKU, itd.)
       for (let i = 0; i < lines.length; i++) {
@@ -293,7 +309,7 @@
             } else if (knownCatalog[code2] || options?.knownSkus?.has?.(code2)) {
               chosen = code2;
             }
-            if (/^[0-9]{6,8}$/.test(chosen)) {
+            if (/^[0-9]{6,8}$/.test(chosen) && !isBarcodePrefix(chosen)) {
               sku = chosen;
               skuScore = 96;
               skuLineIdx = i;
@@ -304,28 +320,30 @@
           const m = line.match(/\b([0-9OIl]{6,8})\b/);
           if (m) {
             const c = WarehouseLabelParser.sanitizeNum(m[1]);
-            if (/^[0-9]{6,8}$/.test(c)) {
+            if (/^[0-9]{6,8}$/.test(c) && !isBarcodePrefix(c)) {
               sku = c;
               skuScore = 95;
               skuLineIdx = i;
               break;
             }
           }
-          if (i + 1 < lines.length) {
-            const nextL = lines[i + 1];
-            if (!WarehouseLabelParser.isPureTechnicalSpecs(nextL)) {
-              const nm = nextL.match(/\b([0-9OIl]{6,8})\b/);
-              if (nm) {
-                const c = WarehouseLabelParser.sanitizeNum(nm[1]);
-                if (/^[0-9]{6,8}$/.test(c)) {
-                  sku = c;
-                  skuScore = 95;
-                  skuLineIdx = i + 1;
-                  break;
-                }
+
+          // Preglej do 2 vrstici naprej (npr. "JYSK product \n number, \n 4334604")
+          for (let offset = 1; offset <= 2 && i + offset < lines.length; offset++) {
+            const nextL = lines[i + offset];
+            if (WarehouseLabelParser.isPureTechnicalSpecs(nextL)) break;
+            const nm = nextL.match(/\b([0-9OIl]{6,8})\b/);
+            if (nm) {
+              const c = WarehouseLabelParser.sanitizeNum(nm[1]);
+              if (/^[0-9]{6,8}$/.test(c) && !isBarcodePrefix(c)) {
+                sku = c;
+                skuScore = 95;
+                skuLineIdx = i + offset;
+                break;
               }
             }
           }
+          if (sku) break;
         }
       }
 
@@ -415,7 +433,7 @@
           for (let i = 0; i < lines.length; i++) {
             if (/order|barcode|batch|ean|tel|phone|gross|weight/i.test(lines[i])) continue;
             const anyM = lines[i].match(/\b([0-9]{7,8})\b/);
-            if (anyM) {
+            if (anyM && !isBarcodePrefix(anyM[1])) {
               sku = anyM[1];
               skuScore = 60;
               skuLineIdx = i;

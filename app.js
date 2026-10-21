@@ -2765,21 +2765,115 @@ async function runAutoScanTick() {
 }
 
 /**
- * Analiza sličice z Google ML Kit (prek nativnega vtičnika MLKitDirect na Androidu ali brskalnika)
+ * Pomožna funkcija: Laplacian ostrenje robov na canvasu za reševanje zamegljenih slik ob tresenju roke
+ */
+function applySharpenFilterToCanvas(canvas, strength = 1.25) {
+  try {
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const src = imgData.data;
+    const output = ctx.createImageData(canvas.width, canvas.height);
+    const dst = output.data;
+    const width = canvas.width;
+    const height = canvas.height;
+    const k = strength;
+    const center = 1 + 4 * k;
+
+    for (let y = 1; y < height - 1; y++) {
+      for (let x = 1; x < width - 1; x++) {
+        const idx = (y * width + x) * 4;
+        for (let c = 0; c < 3; c++) {
+          const top   = ((y - 1) * width + x) * 4 + c;
+          const bottom= ((y + 1) * width + x) * 4 + c;
+          const left  = (y * width + (x - 1)) * 4 + c;
+          const right = (y * width + (x + 1)) * 4 + c;
+          const curr  = idx + c;
+          const val = center * src[curr] - k * (src[top] + src[bottom] + src[left] + src[right]);
+          dst[curr] = Math.min(255, Math.max(0, val));
+        }
+        dst[idx + 3] = 255;
+      }
+    }
+    ctx.putImageData(output, 0, 0);
+  } catch (e) {
+    console.warn('Napaka pri ostrenju:', e);
+  }
+}
+
+/**
+ * Analiza sličice z Google ML Kit (več-stopenjski sistem: raw -> auto-sharpen -> center-crop fallback)
  */
 async function parseFrameWithOcr(canvas) {
   // 1. Primarno: Nativni Google ML Kit (Android aplikacija)
   if (window.Capacitor?.Plugins?.MLKitDirect) {
     try {
+      // PREHOD 1: Surovi zajem naravne ločljivosti
       const base64 = canvas.toDataURL('image/jpeg', 0.82);
       const res = await window.Capacitor.Plugins.MLKitDirect.recognizeBase64({ base64 });
-      if (!res || !res.text || !res.text.trim()) return null;
-      return WarehouseLabelParser.parse(res.text, res.blocks || null, {
-        knownSkus: getKnownSKUsSet(),
-        imageCenter: { x: canvas.width / 2, y: canvas.height / 2 },
-        imageWidth: canvas.width,
-        imageHeight: canvas.height
-      });
+      let parsed = null;
+      if (res && res.text && res.text.trim()) {
+        parsed = WarehouseLabelParser.parse(res.text, res.blocks || null, {
+          knownSkus: getKnownSKUsSet(),
+          imageCenter: { x: canvas.width / 2, y: canvas.height / 2 },
+          imageWidth: canvas.width,
+          imageHeight: canvas.height
+        });
+      }
+
+      // PREHOD 2 (FALLBACK): Če ni najdene šifre artikla (npr. zamegljenost ob tresljaju roke),
+      // avtomatsko izvedemo Laplacian ostrenje robov in ponovimo razpoznavo
+      if (!parsed || !parsed.articleNumber) {
+        const sharpCanvas = document.createElement('canvas');
+        sharpCanvas.width = canvas.width;
+        sharpCanvas.height = canvas.height;
+        const sCtx = sharpCanvas.getContext('2d', { willReadFrequently: true });
+        sCtx.drawImage(canvas, 0, 0);
+        applySharpenFilterToCanvas(sharpCanvas, 1.25);
+
+        const sharpBase64 = sharpCanvas.toDataURL('image/jpeg', 0.82);
+        const res2 = await window.Capacitor.Plugins.MLKitDirect.recognizeBase64({ base64: sharpBase64 });
+        if (res2 && res2.text && res2.text.trim()) {
+          const parsed2 = WarehouseLabelParser.parse(res2.text, res2.blocks || null, {
+            knownSkus: getKnownSKUsSet(),
+            imageCenter: { x: canvas.width / 2, y: canvas.height / 2 },
+            imageWidth: canvas.width,
+            imageHeight: canvas.height
+          });
+          if (parsed2 && parsed2.articleNumber) {
+            return parsed2;
+          }
+        }
+      }
+
+      // PREHOD 3 (FALLBACK): Če še vedno ni šifre artikla (npr. oddaljen ali manjši paket),
+      // izvedemo prilagodljiv povečan sredinski izrez (Adaptive Center Crop)
+      if (!parsed || !parsed.articleNumber) {
+        const cw = Math.round(canvas.width * 0.65);
+        const ch = Math.round(canvas.height * 0.65);
+        if (cw > 100 && ch > 100) {
+          const cropCanvas = document.createElement('canvas');
+          cropCanvas.width = cw;
+          cropCanvas.height = ch;
+          const cCtx = cropCanvas.getContext('2d');
+          cCtx.drawImage(canvas, (canvas.width - cw) / 2, (canvas.height - ch) / 2, cw, ch, 0, 0, cw, ch);
+
+          const cropBase64 = cropCanvas.toDataURL('image/jpeg', 0.82);
+          const res3 = await window.Capacitor.Plugins.MLKitDirect.recognizeBase64({ base64: cropBase64 });
+          if (res3 && res3.text && res3.text.trim()) {
+            const parsed3 = WarehouseLabelParser.parse(res3.text, res3.blocks || null, {
+              knownSkus: getKnownSKUsSet(),
+              imageCenter: { x: cw / 2, y: ch / 2 },
+              imageWidth: cw,
+              imageHeight: ch
+            });
+            if (parsed3 && parsed3.articleNumber) {
+              return parsed3;
+            }
+          }
+        }
+      }
+
+      return parsed;
     } catch (e) {
       console.warn('MLKitDirect napaka:', e);
       return null;
@@ -3149,10 +3243,33 @@ function getCroppedCanvasFromVideo(video) {
 }
 
 /**
- * Hiter pregled prisotnosti vsebine v kadru
+ * Hiter pregled prisotnosti vsebine in ostrine v kadru (preprečevanje zamegljenih posnetkov med zamahom)
  */
 function preprocessAndCheckContrast(canvas, ctx) {
-  // Prepusti surove RGB piksle neposredno Googlovemu nevronskemu modelu ML Kit brez počasne CPU manipulacije
+  try {
+    const w = canvas.width;
+    const h = canvas.height;
+    if (w < 60 || h < 60) return true;
+
+    // Hiter vzorec osrednjega območja
+    const sampleW = Math.min(120, Math.floor(w * 0.35));
+    const sampleH = Math.min(80, Math.floor(h * 0.35));
+    const startX = Math.floor((w - sampleW) / 2);
+    const startY = Math.floor((h - sampleH) / 2);
+    const data = ctx.getImageData(startX, startY, sampleW, sampleH).data;
+
+    let edgeDiff = 0;
+    let count = 0;
+    for (let i = 0; i < data.length - 8; i += 8) {
+      const l1 = (data[i] + data[i + 1] + data[i + 2]) / 3;
+      const l2 = (data[i + 4] + data[i + 5] + data[i + 6]) / 3;
+      edgeDiff += Math.abs(l1 - l2);
+      count++;
+    }
+    const avgEnergy = edgeDiff / (count || 1);
+    // Če je energija robov premajhna (< 1.8), je slika prazna lepenka/tla ali povsem zamegljena med zamahom
+    if (avgEnergy < 1.8) return false;
+  } catch (e) {}
   return true;
 }
 
