@@ -2913,8 +2913,8 @@ async function processAutoScanFrame(video) {
   const liveBadge = document.getElementById('scanLiveIndicator');
 
   try {
-    // 1. Zajemimo sličico z naravno polno ločljivostjo senzorja
-    const { canvas: frameCanvas, hasContent } = getCroppedCanvasFromVideo(video);
+    // 1. Dvostopenjski zajem: nizkoresolucijska detekcija lokacije teksta + 1:1 polnoresolucijski izrez
+    const { canvas: frameCanvas, hasContent } = await getHierarchicalTextCrop(video);
 
     // Če ni dovolj kontrasta (premikanje telefona, prazna tla ali lepenka brez črk), takoj preskoči!
     if (!hasContent) {
@@ -2967,7 +2967,7 @@ async function processAutoScanFrame(video) {
           isProcessingFrame = false;
           return;
         }
-        const nextCrop = getCroppedCanvasFromVideo(video);
+        const nextCrop = await getHierarchicalTextCrop(video);
         if (nextCrop && nextCrop.canvas) {
           const nextRes = await parseFrameWithOcr(nextCrop.canvas);
           if (nextRes && nextRes.articleNumber === frameResult.articleNumber) {
@@ -3137,19 +3137,19 @@ window.triggerHighResSensorCapture = async function() {
       const blob = await ic.takePhoto({ imageWidth: 4096, imageHeight: 3072 });
       const imgBitmap = await createImageBitmap(blob);
 
-      // Hierarhični izrez: najdi lokacijo etikete na nizki ločljivosti in izreži iz polne 4K ločljivosti
-      const { canvas } = extractHierarchicalLabelCrop(imgBitmap);
+      // Hierarhični izrez: najdi lokacijo teksta na nizki ločljivosti in izreži iz polne 4K ločljivosti
+      const { canvas } = await getHierarchicalTextCrop(imgBitmap);
       await processImageWithOCR(canvas);
       return;
     }
 
     // Fallback: zajem okvirja iz videa z naravno ločljivostjo
-    const { canvas } = getCroppedCanvasFromVideo(video);
+    const { canvas } = await getHierarchicalTextCrop(video);
     await processImageWithOCR(canvas);
   } catch (err) {
     console.warn('ImageCapture napaka, fallback na video:', err);
     const video = document.getElementById('cameraVideo');
-    const { canvas } = getCroppedCanvasFromVideo(video);
+    const { canvas } = await getHierarchicalTextCrop(video);
     await processImageWithOCR(canvas);
   } finally {
     if (overlay) overlay.style.display = 'none';
@@ -3210,15 +3210,19 @@ function stopCamera() {
 }
 
 /**
- * DVOSTOPENJSKI HIERARHIČNI ZAJEM (Coarse-to-Fine):
- * 1. Nizkoresolucijska analiza (480p) za avtomatsko določitev lokacije etikete / besedila na škatli
- * 2. 1:1 polnoresolucijski izrez (odrez nepomembnih delov) za maksimalno ostrino OCR
+ * DVOSTOPENJSKI HIERARHIČNI ZAJEM (Coarse-to-Fine Text Detection & Recognition):
+ * 1. Nizkoresolucijski prehod (Coarse frame na 480px širine):
+ *    - Poišče položaj BESEDILA (črn tisk na rjavi lepenki ALI beli etiketi)
+ *    - Primarno uporabi nativni ML Kit detektor blokov, sekundarno gradientno gostoto potez črk
+ * 2. 1:1 polnoresolucijski izrez (Fine crop):
+ *    - Iz izvornega video toka izreže samo natančno območje besedila v 1:1 naravnih pikslih senzorja
+ *    - Odreže nepomembno ozadje (tla, regali, stropne luči), ohrani 100% optično ostrino številk
  */
-function extractHierarchicalLabelCrop(source) {
+async function getHierarchicalTextCrop(source) {
   const fullW = source.videoWidth || source.naturalWidth || source.width || 1920;
   const fullH = source.videoHeight || source.naturalHeight || source.height || 1080;
 
-  // 1. KORAK: Hitri nizkoresolucijski okvir (Coarse frame na 480px širine)
+  // 1. KORAK: Priprava nizkoresolucijskega okvirja (Coarse frame na 480px širine)
   const lowScale = Math.min(1.0, 480 / fullW);
   const lowW = Math.round(fullW * lowScale);
   const lowH = Math.round(fullH * lowScale);
@@ -3229,11 +3233,34 @@ function extractHierarchicalLabelCrop(source) {
   const lowCtx = lowCanvas.getContext('2d', { willReadFrequently: true });
   lowCtx.drawImage(source, 0, 0, lowW, lowH);
 
-  // A) Hitra detekcija bele / svetle nalepke na temnejši podlagi (White label quad)
-  let targetBox = detectWhiteLabelBounds(lowCanvas, lowCtx, lowScale, fullW, fullH);
+  let targetBox = null;
 
-  // B) Če bela nalepka ni očitna (npr. bela embalaža ali mehak kontrast),
-  // uporabimo sredinski vizir z 20% varnostnim robom
+  // A) Hitra detekcija tekstovnih blokov (Google ML Kit na napravi)
+  if (window.Capacitor?.Plugins?.MLKitDirect) {
+    try {
+      const lowB64 = lowCanvas.toDataURL('image/jpeg', 0.68);
+      const lowRes = await window.Capacitor.Plugins.MLKitDirect.recognizeBase64({ base64: lowB64 });
+      if (lowRes && Array.isArray(lowRes.blocks) && lowRes.blocks.length > 0) {
+        targetBox = extractBoundingBoxFromTextBlocks(lowRes.blocks, lowScale, fullW, fullH);
+      }
+    } catch (e) {
+      console.warn('Coarse MLKit text detection opozorilo:', e);
+    }
+  } else if (nativeTextDetector) {
+    try {
+      const blocks = await nativeTextDetector.detect(lowCanvas);
+      if (blocks && blocks.length > 0) {
+        targetBox = extractBoundingBoxFromTextBlocks(blocks, lowScale, fullW, fullH);
+      }
+    } catch (e) {}
+  }
+
+  // B) Računalniški vid: detekcija gostote potez besedila na rjavi lepenki ali etiketah (Pixel Gradient Stroke Density)
+  if (!targetBox) {
+    targetBox = detectTextClusterBounds(lowCanvas, lowCtx, lowScale, fullW, fullH);
+  }
+
+  // C) Če na kadru ni zaznanega besedila, uporabimo varnostni sredinski vizir
   if (!targetBox) {
     const zoomFactor = currentZoomFactor || 1.0;
     const baseW = Math.round(fullW * 0.78 / zoomFactor);
@@ -3243,7 +3270,7 @@ function extractHierarchicalLabelCrop(source) {
     targetBox = { cropX, cropY, cropW: baseW, cropH: baseH };
   }
 
-  // 2. KORAK: Izrez iz POLNE izvorne ločljivosti senzorja (1:1 piksli brez stiskanja)
+  // 2. KORAK: Izrez iz POLNE izvorne ločljivosti senzorja (1:1 optični piksli brez degradacije)
   const highCanvas = document.createElement('canvas');
   highCanvas.width = targetBox.cropW;
   highCanvas.height = targetBox.cropH;
@@ -3256,58 +3283,171 @@ function extractHierarchicalLabelCrop(source) {
 }
 
 /**
- * Pomožna funkcija: detekcija območja bele nalepke na nizkoresolucijskem okvirju
+ * Sinhroni fallback za zajem izreza (uporablja gradientno zaznavo teksta)
  */
-function detectWhiteLabelBounds(canvas, ctx, scale, fullW, fullH) {
+function extractHierarchicalLabelCrop(source) {
+  const fullW = source.videoWidth || source.naturalWidth || source.width || 1920;
+  const fullH = source.videoHeight || source.naturalHeight || source.height || 1080;
+
+  const lowScale = Math.min(1.0, 480 / fullW);
+  const lowW = Math.round(fullW * lowScale);
+  const lowH = Math.round(fullH * lowScale);
+
+  const lowCanvas = document.createElement('canvas');
+  lowCanvas.width = lowW;
+  lowCanvas.height = lowH;
+  const lowCtx = lowCanvas.getContext('2d', { willReadFrequently: true });
+  lowCtx.drawImage(source, 0, 0, lowW, lowH);
+
+  let targetBox = detectTextClusterBounds(lowCanvas, lowCtx, lowScale, fullW, fullH);
+  if (!targetBox) {
+    const zoomFactor = currentZoomFactor || 1.0;
+    const baseW = Math.round(fullW * 0.78 / zoomFactor);
+    const baseH = Math.round(fullH * 0.52 / zoomFactor);
+    const cropX = Math.round((fullW - baseW) / 2);
+    const cropY = Math.round((fullH - baseH) / 2);
+    targetBox = { cropX, cropY, cropW: baseW, cropH: baseH };
+  }
+
+  const highCanvas = document.createElement('canvas');
+  highCanvas.width = targetBox.cropW;
+  highCanvas.height = targetBox.cropH;
+  const highCtx = highCanvas.getContext('2d', { willReadFrequently: true });
+  highCtx.drawImage(source, targetBox.cropX, targetBox.cropY, targetBox.cropW, targetBox.cropH, 0, 0, targetBox.cropW, targetBox.cropH);
+
+  const hasContent = preprocessAndCheckContrast(highCanvas, highCtx);
+  return { canvas: highCanvas, hasContent, targetBox };
+}
+
+/**
+ * Združi zaznane tekstovne bloke v skupni bounding box z 18% varnostnim robom
+ */
+function extractBoundingBoxFromTextBlocks(blocks, scale, fullW, fullH) {
   try {
-    const w = canvas.width;
-    const h = canvas.height;
-    const imgData = ctx.getImageData(0, 0, w, h);
-    const d = imgData.data;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    let count = 0;
 
-    let minX = w, maxX = 0, minY = h, maxY = 0;
-    let whitePixelCount = 0;
-    const step = 4; // Hitro vzorčenje vsakih 4 pikslov (< 2 ms)
+    for (const blk of blocks) {
+      const b = blk.boundingBox || blk;
+      const l = b.left ?? b.x ?? 0;
+      const t = b.top ?? b.y ?? 0;
+      const w = b.width ?? (b.right != null ? b.right - l : 0);
+      const h = b.height ?? (b.bottom != null ? b.bottom - t : 0);
+      const txt = (blk.rawValue || blk.text || '').trim();
 
-    for (let y = 0; y < h; y += step) {
-      for (let x = 0; x < w; x += step) {
-        const idx = (y * w + x) * 4;
-        const r = d[idx];
-        const g = d[idx + 1];
-        const b = d[idx + 2];
-
-        // Svetla / bela nalepka: svetlost > 145 in nizka nasičenost
-        const maxC = Math.max(r, g, b);
-        const minC = Math.min(r, g, b);
-        const isBright = (r + g + b) / 3 > 145;
-        const isLowSaturation = (maxC - minC) < 45;
-
-        if (isBright && isLowSaturation) {
-          whitePixelCount++;
-          if (x < minX) minX = x;
-          if (x > maxX) maxX = x;
-          if (y < minY) minY = y;
-          if (y > maxY) maxY = y;
-        }
+      if (txt.length >= 2 && /[a-zA-Z0-9]/.test(txt)) {
+        minX = Math.min(minX, l);
+        minY = Math.min(minY, t);
+        maxX = Math.max(maxX, l + w);
+        maxY = Math.max(maxY, t + h);
+        count++;
       }
     }
 
-    const totalSampled = (w / step) * (h / step);
-    const whiteRatio = whitePixelCount / totalSampled;
-
-    // Če bela površina predstavlja med 8% in 80% površine in ima smiselno dimenzijo
-    if (whiteRatio >= 0.08 && whiteRatio <= 0.80 && maxX > minX + 45 && maxY > minY + 30) {
+    if (count > 0 && minX < maxX && minY < maxY) {
       const bw = maxX - minX;
       const bh = maxY - minY;
-      const padX = bw * 0.15; // 15% varnostni rob
-      const padY = bh * 0.15;
+      const padX = bw * 0.18; // 18% varnostni rob
+      const padY = bh * 0.18;
 
       const cropX = Math.max(0, Math.round((minX - padX) / scale));
       const cropY = Math.max(0, Math.round((minY - padY) / scale));
       const cropW = Math.min(fullW - cropX, Math.round((bw + 2 * padX) / scale));
       const cropH = Math.min(fullH - cropY, Math.round((bh + 2 * padY) / scale));
 
-      if (cropW > 150 && cropH > 100) {
+      if (cropW > 100 && cropH > 60) {
+        return { cropX, cropY, cropW, cropH };
+      }
+    }
+  } catch (e) {}
+  return null;
+}
+
+/**
+ * Detekcija gostote potez besedila na rjavi lepenki ali beli etiketi (brez vezanosti na barvo)
+ */
+function detectTextClusterBounds(canvas, ctx, scale, fullW, fullH) {
+  try {
+    const w = canvas.width;
+    const h = canvas.height;
+    const imgData = ctx.getImageData(0, 0, w, h);
+    const data = imgData.data;
+
+    const cellW = 16;
+    const cellH = 12;
+    const gridCols = Math.floor(w / cellW);
+    const gridRows = Math.floor(h / cellH);
+    const textGrid = new Uint8Array(gridCols * gridRows);
+
+    // Vzorčenje gradientov potez črk
+    for (let gy = 0; gy < gridRows; gy++) {
+      const y0 = gy * cellH;
+      for (let gx = 0; gx < gridCols; gx++) {
+        const x0 = gx * cellW;
+        let strokeCount = 0;
+
+        for (let y = y0 + 1; y < y0 + cellH - 1; y += 2) {
+          for (let x = x0 + 2; x < x0 + cellW - 2; x += 2) {
+            const idxL = (y * w + (x - 2)) * 4;
+            const idxR = (y * w + (x + 2)) * 4;
+            const lumL = (data[idxL] * 2 + data[idxL + 1] * 5 + data[idxL + 2]) >> 3;
+            const lumR = (data[idxR] * 2 + data[idxR + 1] * 5 + data[idxR + 2]) >> 3;
+            const diff = Math.abs(lumL - lumR);
+            if (diff > 26) {
+              strokeCount++;
+            }
+          }
+        }
+
+        if (strokeCount >= 3) {
+          textGrid[gy * gridCols + gx] = 1;
+        }
+      }
+    }
+
+    let minGx = gridCols, maxGx = 0, minGy = gridRows, maxGy = 0;
+    let textCellsCount = 0;
+
+    for (let gy = 0; gy < gridRows; gy++) {
+      for (let gx = 0; gx < gridCols; gx++) {
+        if (textGrid[gy * gridCols + gx] === 1) {
+          const hasNeighbor = 
+            (gx > 0 && textGrid[gy * gridCols + gx - 1] === 1) ||
+            (gx < gridCols - 1 && textGrid[gy * gridCols + gx + 1] === 1) ||
+            (gy > 0 && textGrid[(gy - 1) * gridCols + gx] === 1) ||
+            (gy < gridRows - 1 && textGrid[(gy + 1) * gridCols + gx] === 1);
+
+          if (hasNeighbor) {
+            textCellsCount++;
+            if (gx < minGx) minGx = gx;
+            if (gx > maxGx) maxGx = gx;
+            if (gy < minGy) minGy = gy;
+            if (gy > maxGy) maxGy = gy;
+          }
+        }
+      }
+    }
+
+    const totalCells = gridCols * gridRows;
+    const ratio = textCellsCount / totalCells;
+
+    if (textCellsCount >= 4 && ratio <= 0.85 && maxGx >= minGx + 1 && maxGy >= minGy) {
+      const minX = minGx * cellW;
+      const maxX = (maxGx + 1) * cellW;
+      const minY = minGy * cellH;
+      const maxY = (maxGy + 1) * cellH;
+
+      const bw = maxX - minX;
+      const bh = maxY - minY;
+      const padX = bw * 0.18;
+      const padY = bh * 0.18;
+
+      const cropX = Math.max(0, Math.round((minX - padX) / scale));
+      const cropY = Math.max(0, Math.round((minY - padY) / scale));
+      const cropW = Math.min(fullW - cropX, Math.round((bw + 2 * padX) / scale));
+      const cropH = Math.min(fullH - cropY, Math.round((bh + 2 * padY) / scale));
+
+      if (cropW > 120 && cropH > 80) {
         return { cropX, cropY, cropW, cropH };
       }
     }
