@@ -142,12 +142,12 @@ window.switchTab = function(targetId) {
   } else {
     if (btnBack) btnBack.style.display = 'inline-flex';
     const titles = {
-      'tab-inventory': 'Zaloga & Regali',
-      'tab-replenishment': 'Police & Nabiranje',
-      'tab-scanner': 'Čitalnik škatel',
-      'tab-audit': 'Inventura zaloge',
-      'tab-history': 'Zgodovina premikov',
-      'tab-settings': 'Nastavitve & Podatki'
+      'tab-inventory': 'Zaloga',
+      'tab-replenishment': 'Police',
+      'tab-scanner': 'Čitalnik',
+      'tab-audit': 'Inventura',
+      'tab-history': 'Dnevnik',
+      'tab-settings': 'Nastavitve'
     };
     if (appTitle) appTitle.textContent = titles[targetId] || 'Skladišče';
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -337,13 +337,21 @@ let cachedItems = [];
 async function refreshInventory() {
   try {
     cachedItems = await DB.getAllItems();
-    updateStatsBar();
-    updateCategoryChips();
-    renderItemsList();
-    updateReceivingBannerUI();
-    if (typeof updateConsolidationBadge === 'function') updateConsolidationBadge();
-    if (typeof updateMixedBoxesBadges === 'function') updateMixedBoxesBadges();
-    if (typeof updateHomeDashboard === 'function') updateHomeDashboard();
+    if (!Array.isArray(cachedItems)) cachedItems = [];
+
+    try { updateStatsBar(); } catch (e) { console.warn('updateStatsBar error:', e); }
+    try { updateCategoryChips(); } catch (e) { console.warn('updateCategoryChips error:', e); }
+    try { renderItemsList(); } catch (e) { console.error('renderItemsList error:', e); }
+    try { updateReceivingBannerUI(); } catch (e) { console.warn('updateReceivingBannerUI error:', e); }
+    if (typeof updateConsolidationBadge === 'function') {
+      try { updateConsolidationBadge(); } catch (e) { console.warn('updateConsolidationBadge error:', e); }
+    }
+    if (typeof updateMixedBoxesBadges === 'function') {
+      try { updateMixedBoxesBadges(); } catch (e) { console.warn('updateMixedBoxesBadges error:', e); }
+    }
+    if (typeof updateHomeDashboard === 'function') {
+      try { updateHomeDashboard(); } catch (e) { console.warn('updateHomeDashboard error:', e); }
+    }
   } catch (err) {
     console.error('Napaka pri branju zaloge:', err);
     showToast('Napaka pri branju podatkov.');
@@ -351,13 +359,17 @@ async function refreshInventory() {
 }
 
 function updateStatsBar() {
+  if (!cachedItems || !Array.isArray(cachedItems)) return;
   const totalItems = cachedItems.length;
   const totalQty = cachedItems.reduce((sum, item) => sum + (Number(item.quantity) || 0), 0);
   const lowCount = cachedItems.filter(item => (Number(item.quantity) || 0) <= (Number(item.minQuantity) || 0)).length;
 
-  document.getElementById('statTotalItems').textContent = totalItems;
-  document.getElementById('statTotalQty').textContent = Math.round(totalQty);
-  document.getElementById('statLowStock').textContent = lowCount;
+  const elItems = document.getElementById('statTotalItems');
+  if (elItems) elItems.textContent = totalItems;
+  const elQty = document.getElementById('statTotalQty');
+  if (elQty) elQty.textContent = Math.round(totalQty);
+  const elLow = document.getElementById('statLowStock');
+  if (elLow) elLow.textContent = lowCount;
 }
 
 function updateCategoryChips() {
@@ -851,6 +863,7 @@ function setupModals() {
   if (btnKeepReceiving) {
     btnKeepReceiving.addEventListener('click', () => {
       modalReceivingBatch.style.display = 'none';
+      switchTab('tab-scanner');
     });
   }
   if (btnFinishReceivingSession) {
@@ -1234,6 +1247,7 @@ window.handleReceivingBannerClick = function() {
     const name = prompt('Vnesite naziv ali številko prevzemne pošiljke:', `Pošiljka ${new Date().toLocaleDateString('sl-SI')}`);
     if (name !== null) {
       startReceivingSession(name.trim());
+      switchTab('tab-scanner');
     }
   }
 };
