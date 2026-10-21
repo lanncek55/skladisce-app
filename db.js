@@ -1728,7 +1728,7 @@ const DB = {
         // Vstavi nove postavke mešane škatle v stock_locations
         for (const it of items) {
           const sku = String(it.sku).trim();
-          const qty = Math.max(1, Number(it.qty) || 1);
+          const qty = Math.max(1, Number(it.qty || it.quantity || it.count) || 1);
           const locId = `${sku}_b1_${shelf}_box_${boxId}`;
           stockStore.put({
             id: locId,
@@ -1760,24 +1760,31 @@ const DB = {
           };
         }
 
+        const totalPcs = items.reduce((s, i) => s + Math.max(1, Number(i.qty || i.quantity || i.count) || 1), 0);
+
         // Shrani vsebnik v mixed_boxes
         const boxRecord = {
           boxId: boxId,
+          boxNumber: boxData.boxNumber || boxId,
           warehouse: warehouse,
           shelf: shelf,
           notes: String(boxData.notes || '').trim(),
-          items: items.map(it => ({
-            sku: String(it.sku).trim(),
-            name: it.name || `Artikel ${it.sku}`,
-            qty: Math.max(1, Number(it.qty) || 1)
-          })),
+          totalItems: totalPcs,
+          items: items.map(it => {
+            const itemQty = Math.max(1, Number(it.qty || it.quantity || it.count) || 1);
+            return {
+              sku: String(it.sku).trim(),
+              name: it.name || `Artikel ${it.sku}`,
+              qty: itemQty,
+              quantity: itemQty
+            };
+          }),
           createdAt: boxData.createdAt || new Date().toISOString(),
           updatedAt: new Date().toISOString()
         };
         mixedStore.put(boxRecord);
 
         // Zabeleži v dnevnik
-        const totalPcs = items.reduce((s, i) => s + (Number(i.qty) || 0), 0);
         logStore.add({
           action: 'pack_mixed_box',
           sku: `BOX-${boxId}`,

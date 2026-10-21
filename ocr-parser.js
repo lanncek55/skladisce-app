@@ -182,11 +182,11 @@
       if (!str || str.length < 3) return true;
       if (/["]/.test(str)) return true;
       if (/\b\d+\s*[\/|\\]\s*\d+\s*[\/|\\]\s*\d+/.test(str)) return true;
-      if (/\b\d+\s*x\s*\d+/i.test(str) && !/mirror|chair|pouffe|pedestal/i.test(str)) return true;
-      if (/gross\s*weight|batch|order|barcode|colli|made\s*in/i.test(str)) return true;
+      if (/\b\d+\s*x\s*\d+/i.test(str) && !/\b(?:mirror|chair|pouffe|pedestal|unit|module|cabinet|table|miza|stol|desk|polica|regal)\b/i.test(str)) return true;
+      if (/gross\s*weight|net\s*weight|batch|order|barcode|colli|made\s*in|package/i.test(str)) return true;
       const words = str.split(/\s+/).filter(w => w.length > 0);
       const shortWords = words.filter(w => w.length <= 3);
-      if (words.length >= 3 && (shortWords.length / words.length) >= 0.5) return true;
+      if (words.length >= 4 && (shortWords.length / words.length) >= 0.75) return true;
       if (/\b[a-z]{1,2}\s+[a-z]{1,2}\b/i.test(str) && !/tm|w\d|h\d/i.test(str)) return true;
       return false;
     }
@@ -470,7 +470,7 @@
         qInBox = 1;
       }
 
-      // 4. Naziv artikla (avtoritativno iz baze/kataloga po točni šifri, da se nikoli ne pomeša z drugo škatlo)
+      // 4. Naziv artikla (avtoritativno iz baze/kataloga po točni šifri ali neposredno iz etikete)
       let prodName = '';
       if (knownCatalog[sku]?.name) {
         prodName = knownCatalog[sku].name;
@@ -478,30 +478,84 @@
       if (!prodName && options?.knownCatalog?.[sku]?.name) {
         prodName = options.knownCatalog[sku].name;
       }
+
+      // Prioriteta 4A: Ime neposredno v isti vrstici kot SKU (npr. "3670653 - Wall unit module GEDSTED cabinet d beige")
+      if (!prodName && candArticleIdx !== -1 && candArticleIdx < cLines.length) {
+        const artLine = cLines[candArticleIdx];
+        // Odstranimo šifro artikla in ločila na začetku vrstice
+        const afterSku = artLine.replace(/^.*?\b[0-9OIl]{7,8}\b\s*[\-\–\:\/]*\s*/i, '').trim();
+        if (afterSku.length >= 3 && /[a-zA-Z]{2,}/.test(afterSku) && !/^[0-9\s.,\-\/]+$/.test(afterSku) && !isNoisyOrDimensionLine(afterSku) && !/^(?:art(?:icle|ikel)?|item(?:\s*no\.?)?|sku|product(?:\s*no\.?)?|vare(?:\s*nr\.?)?|šifra|sifra|koda|pcs|kom|kos|box|colli|pkg)\b/i.test(afterSku)) {
+          prodName = afterSku;
+        }
+        // Ali če je šifra na koncu vrstice: "Wall unit module GEDSTED - 3670653"
+        if (!prodName) {
+          const beforeSku = artLine.replace(/\s*[\-\–\:\/]*\s*\b[0-9OIl]{7,8}\b.*$/i, '').trim();
+          if (beforeSku.length >= 3 && /[a-zA-Z]{2,}/.test(beforeSku) && !/^[0-9\s.,\-\/]+$/.test(beforeSku) && !isNoisyOrDimensionLine(beforeSku) && !/^(?:art(?:icle|ikel)?|item(?:\s*no\.?)?|sku|product(?:\s*no\.?)?|vare(?:\s*nr\.?)?|šifra|sifra|koda)\b/i.test(beforeSku)) {
+            prodName = beforeSku;
+          }
+        }
+      }
+
+      // Prioriteta 4B: Izrecna oznaka (Product text / Product name / Article name / Naziv / Opis)
       if (!prodName) {
         for (const line of cLines) {
-          const textMatch = line.match(/(?:product\s*text|article\s*name)[\s.:]+(.+)/i);
-          if (textMatch && textMatch[1].trim().length > 2 && !isNoisyOrDimensionLine(textMatch[1])) {
+          const textMatch = line.match(/(?:product\s*(?:text|name|desc)|article\s*(?:name|text)|item\s*name|naziv|opis)[\s.:]+(.+)/i);
+          if (textMatch && textMatch[1].trim().length > 2 && /[a-zA-Z]{2,}/.test(textMatch[1]) && !/^[0-9\s.,\-\/]+$/.test(textMatch[1]) && !isNoisyOrDimensionLine(textMatch[1])) {
             prodName = textMatch[1].trim();
             break;
           }
         }
       }
+
+      // Prioriteta 4C: Vrstica tik PRED šifro artikla (zelo pogosto v JYSK: ime zgoraj, šifra spodaj)
+      if (!prodName && candArticleIdx > 0) {
+        const prevLine = cLines[candArticleIdx - 1];
+        if (!isNoisyOrDimensionLine(prevLine) && !boxPattern.test(prevLine) && !/barcode|batch|ean|order|date|tel|phone/i.test(prevLine)) {
+          const cleanedPrev = prevLine.replace(/^[0-9\s\-\:\.\/]+/, '').trim();
+          if (cleanedPrev.length >= 3 && !/^[0-9\s.,\-\/]+$/.test(cleanedPrev)) {
+            prodName = cleanedPrev;
+          }
+        }
+      }
+
+      // Prioriteta 4D: Vrstica tik PO šifri artikla
+      if (!prodName && candArticleIdx !== -1 && candArticleIdx + 1 < cLines.length) {
+        const nextLine = cLines[candArticleIdx + 1];
+        if (!isNoisyOrDimensionLine(nextLine) && !boxPattern.test(nextLine) && !/barcode|batch|ean|order|date|tel|phone/i.test(nextLine)) {
+          const cleanedNext = nextLine.replace(/^[0-9\s\-\:\.\/]+/, '').trim();
+          if (cleanedNext.length >= 3 && !/^[0-9\s.,\-\/]+$/.test(cleanedNext)) {
+            prodName = cleanedNext;
+          }
+        }
+      }
+
+      // Prioriteta 4E: Iskanje po razširjenih ključnih besedah pohištva in izdelkov
       if (!prodName) {
-        const furnitureKeywords = /mirror|chair|stol|miza|table|pouffe|pedestal|ulvik|sandager|fjellerup|larvik|vingan|vanse|aars|lyngvig|foam|pillow|vzglavnik|omara|polica|predalnik/i;
+        const furnitureKeywords = /\b(?:mirror|chair|stol|miza|table|desk|pouffe|pedestal|ulvik|sandager|fjellerup|larvik|vingan|vanse|aars|lyngvig|gedsted|halsted|randrup|randerup|limfjorden|voel|adslev|balslev|foam|pillow|vzglavnik|omara|polica|regal|predalnik|komoda|postelja|bed|sofa|couch|cabinet|wardrobe|bench|cushion|duvet|mattress|rug|curtain|basket|box|rack|stand|drawer|unit|module|shelf|sideboard|nightstand|armchair|bookcase)\b/i;
         for (const line of cLines) {
           if (furnitureKeywords.test(line) && !isNoisyOrDimensionLine(line)) {
-            prodName = line.replace(/^[0-9\s\-\:\.\/]+/, '').trim();
+            const cleaned = line.replace(/^[0-9\s\-\:\.\/]+/, '').trim();
+            if (cleaned.length >= 3) {
+              prodName = cleaned;
+              break;
+            }
+          }
+        }
+      }
+
+      // Prioriteta 4F: Katerakoli veljavna opisna vrstica z besedami v kandidatu
+      if (!prodName) {
+        for (const line of cLines) {
+          if (boxPattern.test(line)) continue;
+          if (/gross\s*weight|size|batch|order|barcode|colli|made\s*in|w\d+|h\d+|d\d+|kg|cm/i.test(line)) continue;
+          const cleaned = line.replace(/^[0-9\s\-\:\.\/]+/, '').trim();
+          if (cleaned.length >= 4 && /[a-zA-Z]{3,}/.test(cleaned) && !/^[0-9\s.,\-\/xX]+$/.test(cleaned)) {
+            prodName = cleaned;
             break;
           }
         }
       }
-      if (!prodName && candArticleIdx !== -1 && candArticleIdx + 1 < cLines.length) {
-        const nextLine = cLines[candArticleIdx + 1];
-        if (!isNoisyOrDimensionLine(nextLine)) {
-          prodName = nextLine;
-        }
-      }
+
       if (!prodName) {
         prodName = `Artikel ${sku}`;
       }

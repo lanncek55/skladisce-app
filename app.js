@@ -6563,6 +6563,7 @@ window.renderMixedBoxesList = async function() {
     container.innerHTML = filtered.map(b => {
       const whName = b.warehouse === 'zgornje' ? '📦 Zgornje skladišče (Soft)' : '🛋️ Spodnje skladišče';
       const items = b.items || [];
+      const boxTotal = b.totalItems || items.reduce((s, it) => s + Math.max(1, Number(it.qty || it.quantity || it.count) || 1), 0);
 
       return `
         <div class="mixed-box-card">
@@ -6570,7 +6571,7 @@ window.renderMixedBoxesList = async function() {
             <div class="mixed-box-number">
               <span>📦 Škatla #${escapeHtml(b.boxNumber || b.boxId)}</span>
               <span style="font-size: 0.75rem; background: rgba(56, 189, 248, 0.15); color: #38bdf8; padding: 2px 7px; border-radius: 4px; font-weight: 600;">
-                ${b.totalItems || 0} kosov
+                ${boxTotal} kosov
               </span>
             </div>
             <button type="button" class="btn-primary" onclick="printCitizenLabel6x6('${escapeHtml(b.boxId)}')" style="margin:0; width:auto; padding: 6px 12px; font-size: 0.78rem; background: linear-gradient(135deg, #0284c7, #0369a1);" title="Natisni nalepko 6x6 cm na Citizen tiskalnik">
@@ -6590,15 +6591,18 @@ window.renderMixedBoxesList = async function() {
               </tr>
             </thead>
             <tbody>
-              ${items.map(it => `
+              ${items.map(it => {
+                const itemQty = Math.max(1, Number(it.qty || it.quantity || it.count) || 1);
+                return `
                 <tr>
                   <td>
                     <div style="font-weight: 600; color: #fff;">${escapeHtml(it.name)}</div>
                     <div style="font-size: 0.72rem; color: var(--primary); font-family: monospace;"># ${escapeHtml(it.sku)}</div>
                   </td>
-                  <td style="text-align: center; font-weight: 700; color: #fbbf24;">${it.quantity}x</td>
+                  <td style="text-align: center; font-weight: 700; color: #fbbf24;">${itemQty}x</td>
                 </tr>
-              `).join('')}
+              `;
+              }).join('')}
             </tbody>
           </table>
 
@@ -6650,9 +6654,10 @@ window.addArticleToCurrentPackBox = function() {
   // Preveri, če je artikel že na seznamu
   const existing = currentPackDraftItems.find(i => i.sku === sku);
   if (existing) {
-    existing.quantity += qty;
+    existing.quantity = (Number(existing.quantity || existing.qty) || 0) + qty;
+    existing.qty = existing.quantity;
   } else {
-    currentPackDraftItems.push({ sku, name, quantity: qty });
+    currentPackDraftItems.push({ sku, name, quantity: qty, qty: qty });
   }
 
   skuInput.value = '';
@@ -6848,7 +6853,8 @@ window.printCitizenLabel6x6 = async function(boxId) {
 
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(6.2);
-      doc.text(`${it.quantity}x`, 55, currentY, { align: 'right' });
+      const itemQty = Math.max(1, Number(it.qty || it.quantity || it.count) || 1);
+      doc.text(`${itemQty}x`, 55, currentY, { align: 'right' });
       currentY += 3.2;
     }
 
