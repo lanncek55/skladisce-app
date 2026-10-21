@@ -163,6 +163,45 @@
     },
 
     /**
+     * Preveri, če je vrstica povezana s škatlo ali količino (da je ne vključimo v naziv artikla)
+     */
+    isBoxOrQtyLine(str) {
+      if (!str) return false;
+      if (/(?:^|[^a-zA-Z0-9čžšČŽŠ])(?:box|colli|karton|package|pkg|[sš]katla|del|part)[\s.:]*[0-9]/i.test(str)) return true;
+      if (/^\s*[1-9]\s*[\/|\\]\s*[1-9]\s*$/.test(str)) return true;
+      if (/(?:quantity|menge|koli[cč]ina|colli\s*size|qty)[\s.:]+[0-9]/i.test(str)) return true;
+      if (/^[0-9]+\s*(?:pcs\.?|kom|kos)\b/i.test(str)) return true;
+      return false;
+    },
+
+    /**
+     * Preveri, ali se naziv artikla prelije v naslednjo vrstico in ga po potrebi spoji
+     * (npr. "Wall unit module GEDSTED" v 1. vrstici in "cabinet d beige" v 2. vrstici)
+     */
+    appendNameOverflow(lines, startIdx, initialName) {
+      let name = (initialName || '').trim();
+      if (!name) return '';
+
+      for (let j = startIdx + 1; j < lines.length && j <= startIdx + 2; j++) {
+        const nextLine = (lines[j] || '').trim();
+        if (!nextLine) break;
+        if (WarehouseLabelParser.isPureTechnicalSpecs(nextLine)) break;
+        if (WarehouseLabelParser.isBoxOrQtyLine(nextLine)) break;
+        if (/^[0-9OIl]{6,10}$/.test(nextLine)) break;
+        if (/\b(?:barcode|ean|order|batch|date|datum|supplier)\b/i.test(nextLine)) break;
+
+        // Če vsebuje veljavne besede in ni tehnična oznaka, gre za preliv imena
+        if (/[a-zA-Z]{2,}/.test(nextLine) && nextLine.length <= 65) {
+          name += ' ' + nextLine;
+        } else {
+          break;
+        }
+      }
+
+      return name.replace(/\s{2,}/g, ' ').trim();
+    },
+
+    /**
      * Pomožna funkcija: razčleni podatke o škatli (npr. Box 1/1, Škatla 1/2, Colli 2/2)
      */
     parseBoxInfo(lines) {
@@ -243,10 +282,29 @@
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
         if (/(?:jysk\s*)?(?:product\s*(?:no\.?|number)?|article|art\.?\s*(?:no\.?|st\.?|št\.?|nr\.?)?|artikel|item(?:\s*no\.?)?|sku|vare[\s.:]*nr|koda|šifra)/i.test(line)) {
-          const m = line.match(/\b([0-9OIl]{7,8})\b/);
+          // Preveri najprej, če je v vrstici vzorec sku / sku2 (pomembna je prva koda - sku)
+          const slashM = line.match(/\b([0-9OIl]{6,8})\s*[\/|\\]\s*([0-9OIl]{6,10})\b/);
+          if (slashM) {
+            const code1 = WarehouseLabelParser.sanitizeNum(slashM[1]);
+            const code2 = WarehouseLabelParser.sanitizeNum(slashM[2]);
+            let chosen = code1;
+            if (knownCatalog[code1] || options?.knownSkus?.has?.(code1)) {
+              chosen = code1;
+            } else if (knownCatalog[code2] || options?.knownSkus?.has?.(code2)) {
+              chosen = code2;
+            }
+            if (/^[0-9]{6,8}$/.test(chosen)) {
+              sku = chosen;
+              skuScore = 96;
+              skuLineIdx = i;
+              break;
+            }
+          }
+
+          const m = line.match(/\b([0-9OIl]{6,8})\b/);
           if (m) {
             const c = WarehouseLabelParser.sanitizeNum(m[1]);
-            if (/^[0-9]{7,8}$/.test(c)) {
+            if (/^[0-9]{6,8}$/.test(c)) {
               sku = c;
               skuScore = 95;
               skuLineIdx = i;
@@ -256,10 +314,10 @@
           if (i + 1 < lines.length) {
             const nextL = lines[i + 1];
             if (!WarehouseLabelParser.isPureTechnicalSpecs(nextL)) {
-              const nm = nextL.match(/\b([0-9OIl]{7,8})\b/);
+              const nm = nextL.match(/\b([0-9OIl]{6,8})\b/);
               if (nm) {
                 const c = WarehouseLabelParser.sanitizeNum(nm[1]);
-                if (/^[0-9]{7,8}$/.test(c)) {
+                if (/^[0-9]{6,8}$/.test(c)) {
                   sku = c;
                   skuScore = 95;
                   skuLineIdx = i + 1;
@@ -271,15 +329,26 @@
         }
       }
 
-      // Nivo 2 (+90): Standardni JYSK vzorec poševnice "7-8 števk / 3-10 števk" (npr. 3651003 / 85823001)
+      // Nivo 2 (+92): JYSK vzorec poševnice "sku / sku2" (npr. "3651003 / 85823001" ali "123456 / 8582300")
+      // Pomembna je samo sku (prva šifra pred poševnico)
       if (!sku) {
         for (let i = 0; i < lines.length; i++) {
-          const slashM = lines[i].match(/\b([0-9OIl]{7,8})\s*[\/|\\]\s*[0-9]{3,10}\b/);
+          const slashM = lines[i].match(/\b([0-9OIl]{6,8})\s*[\/|\\]\s*([0-9OIl]{6,10})\b/);
           if (slashM) {
-            const c = WarehouseLabelParser.sanitizeNum(slashM[1]);
-            if (/^[0-9]{7,8}$/.test(c)) {
-              sku = c;
-              skuScore = 90;
+            const code1 = WarehouseLabelParser.sanitizeNum(slashM[1]);
+            const code2 = WarehouseLabelParser.sanitizeNum(slashM[2]);
+            let chosen = code1;
+            if (knownCatalog[code1] || options?.knownSkus?.has?.(code1)) {
+              chosen = code1;
+            } else if (knownCatalog[code2] || options?.knownSkus?.has?.(code2)) {
+              chosen = code2;
+            } else {
+              chosen = code1; // Pomembna je prva šifra (sku v sku/sku2)
+            }
+
+            if (/^[0-9]{6,8}$/.test(chosen)) {
+              sku = chosen;
+              skuScore = 92;
               skuLineIdx = i;
               break;
             }
@@ -377,71 +446,84 @@
         prodName = options.knownCatalog[sku].name;
       }
 
-      // B) Prioriteta 1: Izrecna oznaka naziva na etiketi (JYSK product text, Product name, Article name, Naziv, Opis)
+      // B) Prioriteta 1A: Naziv v isti vrstici za vzorcem poševnice (npr. "123456 / 3670653 Wall unit module GEDSTED")
+      if (!prodName && skuLineIdx !== -1 && skuLineIdx < lines.length) {
+        const slashLine = lines[skuLineIdx];
+        if (/[\/|\\]/.test(slashLine)) {
+          const afterSlash = slashLine.replace(/^.*?\b[0-9OIl]{6,8}\s*[\/|\\]\s*[0-9OIl]{6,10}\b[\s\-\–\—\:\/]*/i, '').trim();
+          const cleanedAfterSlash = WarehouseLabelParser.cleanLabelPrefix(afterSlash);
+          if (cleanedAfterSlash.length >= 3 && /[a-zA-Z]{2,}/.test(cleanedAfterSlash) && !WarehouseLabelParser.isPureTechnicalSpecs(cleanedAfterSlash)) {
+            prodName = WarehouseLabelParser.appendNameOverflow(lines, skuLineIdx, cleanedAfterSlash);
+          }
+        }
+      }
+
+      // C) Prioriteta 1B: Izrecna oznaka naziva na etiketi (JYSK product text, Product name, Article name, Naziv, Opis)
       if (!prodName) {
-        for (const line of lines) {
-          const tm = line.match(/(?:jysk\s*)?(?:product\s*(?:text|name|desc)|article\s*(?:name|text)|item\s*name|naziv|opis)[\s.:]+(.+)/i);
+        for (let i = 0; i < lines.length; i++) {
+          const tm = lines[i].match(/(?:jysk\s*)?(?:product\s*(?:text|name|desc)|article\s*(?:name|text)|item\s*name|naziv|opis)[\s.:]+(.+)/i);
           if (tm) {
             const cand = tm[1].trim();
             const cleaned = WarehouseLabelParser.cleanLabelPrefix(cand);
             if (cleaned.length >= 2 && /[a-zA-Z]{2,}/.test(cleaned) && !WarehouseLabelParser.isPureTechnicalSpecs(cleaned)) {
-              prodName = cleaned;
+              prodName = WarehouseLabelParser.appendNameOverflow(lines, i, cleaned);
               break;
             }
           }
         }
       }
 
-      // C) Prioriteta 2: V isti vrstici kot SKU z ločilom (npr. "3670653 - Wall unit module GEDSTED cabinet d beige")
+      // D) Prioriteta 2: V isti vrstici kot SKU z ločilom (npr. "3670653 - Wall unit module GEDSTED")
       if (!prodName && skuLineIdx !== -1 && skuLineIdx < lines.length) {
         const artLine = lines[skuLineIdx];
         const afterSku = artLine.replace(new RegExp('^.*?\\b' + sku + '\\b[\\s\\-\\–\\—\\:\\/]*', 'i'), '').trim();
         const cleanedAfter = WarehouseLabelParser.cleanLabelPrefix(afterSku);
         if (cleanedAfter.length >= 3 && /[a-zA-Z]{2,}/.test(cleanedAfter) && !WarehouseLabelParser.isPureTechnicalSpecs(cleanedAfter)) {
-          prodName = cleanedAfter;
+          prodName = WarehouseLabelParser.appendNameOverflow(lines, skuLineIdx, cleanedAfter);
         }
         if (!prodName) {
           const beforeSku = artLine.replace(new RegExp('[\\s\\-\\–\\—\\:\\/]*\\b' + sku + '\\b.*$', 'i'), '').trim();
           const cleanedBefore = WarehouseLabelParser.cleanLabelPrefix(beforeSku);
           if (cleanedBefore.length >= 3 && /[a-zA-Z]{2,}/.test(cleanedBefore) && !WarehouseLabelParser.isPureTechnicalSpecs(cleanedBefore)) {
-            prodName = cleanedBefore;
+            prodName = WarehouseLabelParser.appendNameOverflow(lines, skuLineIdx, cleanedBefore);
           }
         }
       }
 
-      // D) Prioriteta 3: Vrstica takoj PO šifri (npr. Dining chair ADSLEV, Mirror SANDAGER)
+      // E) Prioriteta 3: Vrstica takoj PO šifri (npr. Dining chair ADSLEV, Mirror SANDAGER)
       if (!prodName && skuLineIdx !== -1 && skuLineIdx + 1 < lines.length) {
         const nextLine = lines[skuLineIdx + 1];
         const cleanedNext = WarehouseLabelParser.cleanLabelPrefix(nextLine);
-        if (cleanedNext.length >= 3 && /[a-zA-Z]{2,}/.test(cleanedNext) && !WarehouseLabelParser.isPureTechnicalSpecs(nextLine) && !/(?:box|colli|karton|[sš]katla)/i.test(nextLine)) {
-          prodName = cleanedNext;
+        if (cleanedNext.length >= 3 && /[a-zA-Z]{2,}/.test(cleanedNext) && !WarehouseLabelParser.isPureTechnicalSpecs(nextLine) && !WarehouseLabelParser.isBoxOrQtyLine(nextLine)) {
+          prodName = WarehouseLabelParser.appendNameOverflow(lines, skuLineIdx + 1, cleanedNext);
         }
       }
 
-      // E) Prioriteta 4: Vrstica takoj PRED šifro
+      // F) Prioriteta 4: Vrstica takoj PRED šifro
       if (!prodName && skuLineIdx > 0) {
         const prevLine = lines[skuLineIdx - 1];
         const cleanedPrev = WarehouseLabelParser.cleanLabelPrefix(prevLine);
-        if (cleanedPrev.length >= 3 && /[a-zA-Z]{2,}/.test(cleanedPrev) && !WarehouseLabelParser.isPureTechnicalSpecs(prevLine) && !/(?:box|colli|karton|[sš]katla)/i.test(prevLine)) {
-          prodName = cleanedPrev;
+        if (cleanedPrev.length >= 3 && /[a-zA-Z]{2,}/.test(cleanedPrev) && !WarehouseLabelParser.isPureTechnicalSpecs(prevLine) && !WarehouseLabelParser.isBoxOrQtyLine(prevLine)) {
+          prodName = WarehouseLabelParser.appendNameOverflow(lines, skuLineIdx - 1, cleanedPrev);
         }
       }
 
-      // F) Prioriteta 5: Iskanje po ključnih pohištvenih besedah
+      // G) Prioriteta 5: Iskanje po ključnih pohištvenih besedah
       if (!prodName) {
         const furnitureKeywords = /\b(?:mirror|chair|stol|miza|table|desk|pouffe|pedestal|ulvik|sandager|fjellerup|larvik|vingan|vanse|aars|lyngvig|gedsted|halsted|randrup|randerup|limfjorden|voel|adslev|balslev|foam|pillow|vzglavnik|omara|polica|regal|predalnik|komoda|postelja|posteljni|bed|sofa|couch|cabinet|wardrobe|bench|cushion|duvet|mattress|rug|curtain|basket|box|rack|stand|drawer|unit|module|shelf|sideboard|nightstand|armchair|bookcase)\b/i;
-        for (const line of lines) {
-          if (furnitureKeywords.test(line) && !WarehouseLabelParser.isPureTechnicalSpecs(line) && !/(?:box|colli|karton|[sš]katla)/i.test(line)) {
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          if (furnitureKeywords.test(line) && !WarehouseLabelParser.isPureTechnicalSpecs(line) && !WarehouseLabelParser.isBoxOrQtyLine(line)) {
             const cleaned = WarehouseLabelParser.cleanLabelPrefix(line);
             if (cleaned.length >= 3) {
-              prodName = cleaned;
+              prodName = WarehouseLabelParser.appendNameOverflow(lines, i, cleaned);
               break;
             }
           }
         }
       }
 
-      // G) Prioriteta 6: Katerakoli veljavna opisna vrstica z besedami
+      // H) Prioriteta 6: Katerakoli veljavna opisna vrstica z besedami
       if (!prodName) {
         for (const line of lines) {
           if (/(?:box|colli|karton|[sš]katla)/i.test(line)) continue;
