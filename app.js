@@ -3235,13 +3235,31 @@ async function getHierarchicalTextCrop(source) {
 
   let targetBox = null;
 
-  // A) Hitra detekcija tekstovnih blokov (Google ML Kit na napravi)
-  if (window.Capacitor?.Plugins?.MLKitDirect) {
+  // A) Namenska strojna ML detekcija tekstovnih blokov (Google ML Kit na ravni nativne Jave z minimalno zakasnitvijo)
+  if (window.Capacitor?.Plugins?.MLKitDirect?.detectTextBoundsML) {
     try {
-      const lowB64 = lowCanvas.toDataURL('image/jpeg', 0.68);
+      const lowB64 = lowCanvas.toDataURL('image/jpeg', 0.65);
+      const mlRes = await window.Capacitor.Plugins.MLKitDirect.detectTextBoundsML({
+        base64: lowB64,
+        fullW: fullW,
+        fullH: fullH
+      });
+      if (mlRes && mlRes.hasText && mlRes.targetBox) {
+        targetBox = mlRes.targetBox;
+        updateLiveTextTracker(targetBox.normLeft, targetBox.normTop, targetBox.normWidth, targetBox.normHeight);
+      }
+    } catch (e) {
+      console.warn('detectTextBoundsML opozorilo:', e);
+    }
+  } else if (window.Capacitor?.Plugins?.MLKitDirect) {
+    try {
+      const lowB64 = lowCanvas.toDataURL('image/jpeg', 0.65);
       const lowRes = await window.Capacitor.Plugins.MLKitDirect.recognizeBase64({ base64: lowB64 });
       if (lowRes && Array.isArray(lowRes.blocks) && lowRes.blocks.length > 0) {
         targetBox = extractBoundingBoxFromTextBlocks(lowRes.blocks, lowScale, fullW, fullH);
+        if (targetBox && targetBox.normLeft != null) {
+          updateLiveTextTracker(targetBox.normLeft, targetBox.normTop, targetBox.normWidth, targetBox.normHeight);
+        }
       }
     } catch (e) {
       console.warn('Coarse MLKit text detection opozorilo:', e);
@@ -3251,17 +3269,24 @@ async function getHierarchicalTextCrop(source) {
       const blocks = await nativeTextDetector.detect(lowCanvas);
       if (blocks && blocks.length > 0) {
         targetBox = extractBoundingBoxFromTextBlocks(blocks, lowScale, fullW, fullH);
+        if (targetBox && targetBox.normLeft != null) {
+          updateLiveTextTracker(targetBox.normLeft, targetBox.normTop, targetBox.normWidth, targetBox.normHeight);
+        }
       }
     } catch (e) {}
   }
 
-  // B) Računalniški vid: detekcija gostote potez besedila na rjavi lepenki ali etiketah (Pixel Gradient Stroke Density)
+  // B) Računalniški vid: gradientna detekcija potez besedila (fallback brez vezave na barvo)
   if (!targetBox) {
     targetBox = detectTextClusterBounds(lowCanvas, lowCtx, lowScale, fullW, fullH);
+    if (targetBox && targetBox.normLeft != null) {
+      updateLiveTextTracker(targetBox.normLeft, targetBox.normTop, targetBox.normWidth, targetBox.normHeight);
+    }
   }
 
-  // C) Če na kadru ni zaznanega besedila, uporabimo varnostni sredinski vizir
+  // C) Če na kadru ni zaznanega besedila, skrijemo sledilnik in uporabimo varnostni sredinski vizir
   if (!targetBox) {
+    hideLiveTextTracker();
     const zoomFactor = currentZoomFactor || 1.0;
     const baseW = Math.round(fullW * 0.78 / zoomFactor);
     const baseH = Math.round(fullH * 0.52 / zoomFactor);
@@ -3280,6 +3305,36 @@ async function getHierarchicalTextCrop(source) {
   const hasContent = preprocessAndCheckContrast(highCanvas, highCtx);
 
   return { canvas: highCanvas, hasContent, targetBox };
+}
+
+/**
+ * Posodobi vizualni HUD okvirček na zaslonu, ki v živo sledi besedilu
+ */
+function updateLiveTextTracker(normLeft, normTop, normWidth, normHeight) {
+  try {
+    const tracker = document.getElementById('mlLiveTextTracker');
+    if (!tracker) return;
+    tracker.style.display = 'block';
+    tracker.style.left = Math.max(2, Math.min(95, normLeft * 100)).toFixed(1) + '%';
+    tracker.style.top = Math.max(2, Math.min(95, normTop * 100)).toFixed(1) + '%';
+    tracker.style.width = Math.max(8, Math.min(96, normWidth * 100)).toFixed(1) + '%';
+    tracker.style.height = Math.max(6, Math.min(96, normHeight * 100)).toFixed(1) + '%';
+    tracker.style.opacity = '1';
+  } catch (e) {}
+}
+
+function hideLiveTextTracker() {
+  try {
+    const tracker = document.getElementById('mlLiveTextTracker');
+    if (tracker && tracker.style.opacity !== '0') {
+      tracker.style.opacity = '0';
+      setTimeout(() => {
+        if (tracker && tracker.style.opacity === '0') {
+          tracker.style.display = 'none';
+        }
+      }, 150);
+    }
+  } catch (e) {}
 }
 
 /**
@@ -3355,8 +3410,13 @@ function extractBoundingBoxFromTextBlocks(blocks, scale, fullW, fullH) {
       const cropW = Math.min(fullW - cropX, Math.round((bw + 2 * padX) / scale));
       const cropH = Math.min(fullH - cropY, Math.round((bh + 2 * padY) / scale));
 
+      const normLeft = Math.max(0, (minX - padX) / (fullW * scale));
+      const normTop = Math.max(0, (minY - padY) / (fullH * scale));
+      const normWidth = Math.min(1.0 - normLeft, (bw + 2 * padX) / (fullW * scale));
+      const normHeight = Math.min(1.0 - normTop, (bh + 2 * padY) / (fullH * scale));
+
       if (cropW > 100 && cropH > 60) {
-        return { cropX, cropY, cropW, cropH };
+        return { cropX, cropY, cropW, cropH, normLeft, normTop, normWidth, normHeight };
       }
     }
   } catch (e) {}
@@ -3448,7 +3508,11 @@ function detectTextClusterBounds(canvas, ctx, scale, fullW, fullH) {
       const cropH = Math.min(fullH - cropY, Math.round((bh + 2 * padY) / scale));
 
       if (cropW > 120 && cropH > 80) {
-        return { cropX, cropY, cropW, cropH };
+        const normLeft = Math.max(0, (minX - padX) / w);
+        const normTop = Math.max(0, (minY - padY) / h);
+        const normWidth = Math.min(1.0 - normLeft, (bw + 2 * padX) / w);
+        const normHeight = Math.min(1.0 - normTop, (bh + 2 * padY) / h);
+        return { cropX, cropY, cropW, cropH, normLeft, normTop, normWidth, normHeight };
       }
     }
   } catch (e) {}

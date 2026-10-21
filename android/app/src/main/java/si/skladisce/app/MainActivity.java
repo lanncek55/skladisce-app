@@ -225,6 +225,24 @@ public class MainActivity extends BridgeActivity {
 
     @CapacitorPlugin(name = "MLKitDirect")
     public static class MLKitDirectPlugin extends Plugin {
+        private com.google.mlkit.vision.text.TextRecognizer recognizerInstance = null;
+
+        private synchronized com.google.mlkit.vision.text.TextRecognizer getRecognizer() {
+            if (recognizerInstance == null) {
+                recognizerInstance = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);
+            }
+            return recognizerInstance;
+        }
+
+        @Override
+        protected void handleOnDestroy() {
+            if (recognizerInstance != null) {
+                try { recognizerInstance.close(); } catch (Exception ignored) {}
+                recognizerInstance = null;
+            }
+            super.handleOnDestroy();
+        }
+
         @PluginMethod
         public void recognizeBase64(PluginCall call) {
             String base64Data = call.getString("base64");
@@ -246,12 +264,8 @@ public class MainActivity extends BridgeActivity {
                 }
 
                 InputImage image = InputImage.fromBitmap(bitmap, 0);
-                com.google.mlkit.vision.text.TextRecognizer recognizer = 
-                    TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);
-
-                recognizer.process(image)
+                getRecognizer().process(image)
                     .addOnSuccessListener(result -> {
-                        recognizer.close();
                         JSObject ret = new JSObject();
                         ret.put("text", result.getText());
 
@@ -274,7 +288,122 @@ public class MainActivity extends BridgeActivity {
                         call.resolve(ret);
                     })
                     .addOnFailureListener(e -> {
-                        recognizer.close();
+                        call.reject(e.getMessage());
+                    });
+            } catch (Exception e) {
+                call.reject(e.getMessage());
+            }
+        }
+
+        /**
+         * Namenska metoda za strojno (ML) detekcijo položaja besedila v grobem (coarse) kadru
+         * Izračuna natančen bounding box teksta z varnostnim robom neposredno v nativni kodi (zelo hitro)
+         */
+        @PluginMethod
+        public void detectTextBoundsML(PluginCall call) {
+            String base64Data = call.getString("base64");
+            int fullW = call.getInt("fullW", 1920);
+            int fullH = call.getInt("fullH", 1080);
+
+            if (base64Data == null || base64Data.isEmpty()) {
+                call.reject("Base64 string missing");
+                return;
+            }
+
+            if (base64Data.contains(",")) {
+                base64Data = base64Data.substring(base64Data.indexOf(",") + 1);
+            }
+
+            try {
+                byte[] decodedBytes = Base64.decode(base64Data, Base64.DEFAULT);
+                Bitmap bitmap = BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.length);
+                if (bitmap == null) {
+                    call.reject("Could not decode bitmap");
+                    return;
+                }
+
+                int lowW = bitmap.getWidth();
+                int lowH = bitmap.getHeight();
+                float scale = (float) lowW / (float) fullW;
+
+                InputImage image = InputImage.fromBitmap(bitmap, 0);
+                getRecognizer().process(image)
+                    .addOnSuccessListener(result -> {
+                        JSObject ret = new JSObject();
+                        java.util.List<com.google.mlkit.vision.text.Text.TextBlock> blocks = result.getTextBlocks();
+
+                        if (blocks == null || blocks.isEmpty()) {
+                            ret.put("hasText", false);
+                            call.resolve(ret);
+                            return;
+                        }
+
+                        int minX = lowW;
+                        int minY = lowH;
+                        int maxX = 0;
+                        int maxY = 0;
+                        int validCount = 0;
+                        StringBuilder sb = new StringBuilder();
+
+                        for (com.google.mlkit.vision.text.Text.TextBlock block : blocks) {
+                            String txt = block.getText() != null ? block.getText().trim() : "";
+                            if (txt.length() >= 2 && txt.matches(".*[a-zA-Z0-9].*")) {
+                                android.graphics.Rect box = block.getBoundingBox();
+                                if (box != null) {
+                                    minX = Math.min(minX, box.left);
+                                    minY = Math.min(minY, box.top);
+                                    maxX = Math.max(maxX, box.right);
+                                    maxY = Math.max(maxY, box.bottom);
+                                    validCount++;
+                                    if (sb.length() < 300) {
+                                        sb.append(txt).append("\n");
+                                    }
+                                }
+                            }
+                        }
+
+                        if (validCount == 0 || minX >= maxX || minY >= maxY) {
+                            ret.put("hasText", false);
+                            call.resolve(ret);
+                            return;
+                        }
+
+                        // Dodaj 18% varnostni rob
+                        int bw = maxX - minX;
+                        int bh = maxY - minY;
+                        int padX = (int) (bw * 0.18f);
+                        int padY = (int) (bh * 0.18f);
+
+                        int paddedMinX = Math.max(0, minX - padX);
+                        int paddedMinY = Math.max(0, minY - padY);
+                        int paddedMaxX = Math.min(lowW, maxX + padX);
+                        int paddedMaxY = Math.min(lowH, maxY + padY);
+
+                        // Preslikava na polno ločljivost
+                        int cropX = Math.max(0, Math.round(paddedMinX / scale));
+                        int cropY = Math.max(0, Math.round(paddedMinY / scale));
+                        int cropW = Math.min(fullW - cropX, Math.round((paddedMaxX - paddedMinX) / scale));
+                        int cropH = Math.min(fullH - cropY, Math.round((paddedMaxY - paddedMinY) / scale));
+
+                        ret.put("hasText", true);
+                        ret.put("blocksCount", validCount);
+                        ret.put("detectedText", sb.toString());
+
+                        JSObject tb = new JSObject();
+                        tb.put("cropX", cropX);
+                        tb.put("cropY", cropY);
+                        tb.put("cropW", cropW);
+                        tb.put("cropH", cropH);
+                        // Normalizirane koordinate za UI vizualno sledenje (HUD)
+                        tb.put("normLeft", (double) paddedMinX / lowW);
+                        tb.put("normTop", (double) paddedMinY / lowH);
+                        tb.put("normWidth", (double) (paddedMaxX - paddedMinX) / lowW);
+                        tb.put("normHeight", (double) (paddedMaxY - paddedMinY) / lowH);
+
+                        ret.put("targetBox", tb);
+                        call.resolve(ret);
+                    })
+                    .addOnFailureListener(e -> {
                         call.reject(e.getMessage());
                     });
             } catch (Exception e) {

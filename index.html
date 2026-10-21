@@ -337,13 +337,22 @@
           </div>
         </div>
         <div class="scanner-overlay">
+          <!-- Živi HUD sledilnik zaznanega besedila (ML Text Target Tracker) -->
+          <div id="mlLiveTextTracker" class="ml-live-text-tracker" style="display: none; opacity: 0;">
+            <div class="ml-tracker-corner tl"></div>
+            <div class="ml-tracker-corner tr"></div>
+            <div class="ml-tracker-corner bl"></div>
+            <div class="ml-tracker-corner br"></div>
+            <span class="ml-tracker-badge">⚡ TEKST ZAZNAN</span>
+          </div>
+
           <div class="scan-frame box-frame" id="scanFrameBox">
             <div class="scan-laser-line" id="scanLaserLine"></div>
             <div class="frame-corner top-left"></div>
             <div class="frame-corner top-right"></div>
             <div class="frame-corner bottom-left"></div>
             <div class="frame-corner bottom-right"></div>
-            <div class="frame-label" id="frameLabelText">Usmeri kamero v etiketo</div>
+            <div class="frame-label" id="frameLabelText">Usmeri kamero v etiketo ali škatlo</div>
           </div>
         </div>
         <!-- Nalagalnik obdelave -->
