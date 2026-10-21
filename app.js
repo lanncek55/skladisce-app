@@ -2397,7 +2397,7 @@ let isProcessingFrame = false;
 let lastDetectedSKU = null;
 let lastDetectedBoxKey = null;
 let lastDetectedTime = 0;
-let autoScanAngleCycle = 0; // AI cikel kotov: 0°, 90°, 0°, 270° (brez obračanja telefona)
+let lastCandidateSKU = null;
 
 // Strojni TextDetector (Android WebView / Chrome)
 let nativeTextDetector = null;
@@ -2776,7 +2776,9 @@ async function parseFrameWithOcr(canvas) {
       if (!res || !res.text || !res.text.trim()) return null;
       return WarehouseLabelParser.parse(res.text, res.blocks || null, {
         knownSkus: getKnownSKUsSet(),
-        imageCenter: { x: canvas.width / 2, y: canvas.height / 2 }
+        imageCenter: { x: canvas.width / 2, y: canvas.height / 2 },
+        imageWidth: canvas.width,
+        imageHeight: canvas.height
       });
     } catch (e) {
       console.warn('MLKitDirect napaka:', e);
@@ -2792,7 +2794,9 @@ async function parseFrameWithOcr(canvas) {
       const fullText = blocks.map(b => b.rawValue).join('\n');
       return WarehouseLabelParser.parse(fullText, blocks, {
         knownSkus: getKnownSKUsSet(),
-        imageCenter: { x: canvas.width / 2, y: canvas.height / 2 }
+        imageCenter: { x: canvas.width / 2, y: canvas.height / 2 },
+        imageWidth: canvas.width,
+        imageHeight: canvas.height
       });
     } catch (e) {
       return null;
@@ -2843,69 +2847,53 @@ async function processAutoScanFrame(video) {
       } catch (e) {}
     }
 
-    // 2. AI Cikel kotov: [0°, 90°, 0°, 270°]
-    // Omogoča takojšnje prepoznavanje ležečih in pokončnih etiket brez obračanja telefona v roki!
-    const scanAngles = [0, 90, 0, 270];
-    const currentAngle = scanAngles[autoScanAngleCycle % scanAngles.length];
-    autoScanAngleCycle = (autoScanAngleCycle + 1) % scanAngles.length;
-
-    let canvasToTest = (currentAngle === 0) ? frameCanvas : rotateCanvas(frameCanvas, currentAngle);
-
-    // Prva sličica (Frame 1)
-    const frame1Result = await parseFrameWithOcr(canvasToTest);
-    if (!frame1Result || !frame1Result.articleNumber) {
+    // 2. Takojšnja analiza sličice z Google ML Kit (brez počasnih rotacij)
+    let frameResult = await parseFrameWithOcr(frameCanvas);
+    if (!frameResult || !frameResult.articleNumber) {
       isProcessingFrame = false;
       return;
     }
 
-    // 3. BURST TOČKOVANJE (3-Frame Consensus Voting):
-    // Takoj po prvi detekciji zajamemo še 2 sličici (z zamikom 40ms)
-    // in sistem točkuje konsenz med sličicami, kar prepreči branje optičnega šuma ali 7 naključnih številk!
-    const candidates = [frame1Result];
+    // 3. Preverjanje zanesljivosti:
+    // Če ima visoko oceno (oznaka etiket, JYSK poševnica, pomišljaj, prepoznano ime ali je artikel v bazi),
+    // sprožimo prepoznavo TAKOJ brez zamud!
+    const isHighConfidence = (frameResult.score || 0) >= 80 || (frameResult.name && !frameResult.name.startsWith('Artikel '));
+    const isKnown = getKnownSKUsSet().has(frameResult.articleNumber);
 
-    for (let f = 2; f <= 3; f++) {
-      await new Promise(r => setTimeout(r, 40));
-      if (!isScanLoopRunning) break;
-      const nextCrop = getCroppedCanvasFromVideo(video);
-      if (nextCrop && nextCrop.canvas) {
-        const nextTestCanvas = (currentAngle === 0) ? nextCrop.canvas : rotateCanvas(nextCrop.canvas, currentAngle);
-        const nextRes = await parseFrameWithOcr(nextTestCanvas);
-        if (nextRes && nextRes.articleNumber) {
-          candidates.push(nextRes);
+    let confirmed = isHighConfidence || isKnown;
+
+    // Če gre za šibko/izolirano številko, opravimo hitro potrditev z naslednjo sličico (40ms)
+    if (!confirmed) {
+      if (lastCandidateSKU === frameResult.articleNumber) {
+        confirmed = true;
+      } else {
+        lastCandidateSKU = frameResult.articleNumber;
+        await new Promise(r => setTimeout(r, 40));
+        if (!isScanLoopRunning) {
+          isProcessingFrame = false;
+          return;
+        }
+        const nextCrop = getCroppedCanvasFromVideo(video);
+        if (nextCrop && nextCrop.canvas) {
+          const nextRes = await parseFrameWithOcr(nextCrop.canvas);
+          if (nextRes && nextRes.articleNumber === frameResult.articleNumber) {
+            confirmed = true;
+            if ((nextRes.score || 0) > (frameResult.score || 0)) {
+              frameResult = nextRes;
+            }
+          }
         }
       }
     }
 
-    // Preštejemo glasove po SKU-ju med vsemi 3 frami
-    const skuVotes = {};
-    for (const c of candidates) {
-      skuVotes[c.articleNumber] = (skuVotes[c.articleNumber] || 0) + 1;
-    }
-
-    let bestSku = null;
-    let maxVotes = 0;
-    for (const [sku, votes] of Object.entries(skuVotes)) {
-      if (votes > maxVotes) {
-        maxVotes = votes;
-        bestSku = sku;
-      }
-    }
-
-    const isKnown = getKnownSKUsSet().has(bestSku);
-    // Konsenz: vsaj 2 od 3 framov se morata popolnoma ujemati, ali pa 1 frame z visoko oceno zaupanja znanega artikla iz baze
-    const hasConsensus = maxVotes >= 2 || (maxVotes === 1 && candidates.length === 1 && isKnown && (frame1Result.matchScore || 0) >= 40);
-
-    if (!hasConsensus || !bestSku) {
+    if (!confirmed) {
       isProcessingFrame = false;
       return;
     }
 
-    // Izberemo kandidata zmagovalnega SKU-ja z najvišjim točkovanjem in podatki o škatli
-    const matching = candidates.filter(c => c.articleNumber === bestSku);
-    matching.sort((a, b) => (b.matchScore || 0) - (a.matchScore || 0));
-    parsed = matching[0];
+    parsed = frameResult;
 
-    // 4. Če je artikel potrjen s konsenzom, sproži prepoznavo!
+    // 4. Če je artikel potrjen, sproži prepoznavo!
     if (parsed && parsed.articleNumber) {
       const now = performance.now();
       const currentBoxKey = `${parsed.articleNumber}_b${parsed.boxCurrent || 1}`;
@@ -2919,6 +2907,7 @@ async function processAutoScanFrame(video) {
       lastDetectedBoxKey = currentBoxKey;
       lastDetectedSKU = parsed.articleNumber;
       lastDetectedTime = now;
+      lastCandidateSKU = null;
 
       // Zvočni in haptični signal
       playSuccessBeep();
