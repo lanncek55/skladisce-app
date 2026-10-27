@@ -223,6 +223,291 @@ public class MainActivity extends BridgeActivity {
         return super.dispatchKeyEvent(event);
     }
 
+
+    public static class WarehouseScanResult {
+        public String primarySku = null;
+        public String secondarySku = null;
+        public String barcode = null;
+        public int boxCurrent = 1;
+        public int boxTotal = 1;
+    }
+
+    public static class WarehouseLabelHelper {
+        public static String sanitizeDigits(String s) {
+            if (s == null) return "";
+            return s.trim().toUpperCase()
+                .replace("O", "0")
+                .replace("I", "1")
+                .replace("L", "1")
+                .replace("T", "7")
+                .replace("S", "5")
+                .replace("B", "8");
+        }
+
+        public static boolean isPrimaryValid(String s) {
+            if (s == null || s.length() != 7) return false;
+            if (!s.matches("^[1-6][0-9]{6}$")) return false;
+            return !s.startsWith("455");
+        }
+
+        public static boolean isSecondaryValid(String s) {
+            if (s == null || s.length() != 8) return false;
+            if (!s.matches("^[5-9][0-9]{7}$")) return false;
+            if (s.equals("89397500") || s.equals("99397500")) return false;
+            return s.endsWith("001") || s.endsWith("700") || 
+                   s.startsWith("56379") || s.startsWith("70663") || 
+                   s.startsWith("78480") || s.startsWith("81006") || 
+                   s.startsWith("91437") || s.startsWith("91493") || 
+                   s.startsWith("92947") || s.startsWith("93291") || 
+                   s.startsWith("92012") || s.startsWith("73055") || 
+                   s.startsWith("78565");
+        }
+
+        public static boolean isValidEanChecksum(String code) {
+            if (code == null || (code.length() != 13 && code.length() != 8)) return false;
+            try {
+                int sum = 0;
+                int len = code.length();
+                for (int i = 0; i < len - 1; i++) {
+                    int d = code.charAt(i) - '0';
+                    if (d < 0 || d > 9) return false;
+                    sum += (len == 13) ? (i % 2 == 0 ? d : d * 3) : (i % 2 == 0 ? d * 3 : d);
+                }
+                int check = (10 - (sum % 10)) % 10;
+                return check == (code.charAt(len - 1) - '0');
+            } catch (Exception e) {
+                return false;
+            }
+        }
+
+        public static android.graphics.Rect computeSmartClusterCrop(java.util.List<com.google.mlkit.vision.text.Text.TextBlock> blocks, int imgW, int imgH) {
+            if (blocks == null || blocks.isEmpty()) {
+                int baseW = Math.round(imgW * 0.80f);
+                int baseH = Math.round(imgH * 0.65f);
+                return new android.graphics.Rect((imgW - baseW) / 2, (imgH - baseH) / 2, (imgW + baseW) / 2, (imgH + baseH) / 2);
+            }
+
+            float centerX = imgW / 2.0f;
+            float centerY = imgH / 2.0f;
+
+            com.google.mlkit.vision.text.Text.TextBlock bestAnchor = null;
+            float bestScore = -1f;
+
+            for (com.google.mlkit.vision.text.Text.TextBlock block : blocks) {
+                String txt = block.getText() != null ? block.getText().toLowerCase() : "";
+                if (txt.length() < 2) continue;
+                android.graphics.Rect box = block.getBoundingBox();
+                if (box == null) continue;
+
+                float score = 0f;
+                if (txt.matches(".*[0-9]{5,}.*")) score += 30f;
+                if (txt.matches(".*(?:box|colli|del|part|[sš]katla|item|art|sku|koda|jysk).*")) score += 40f;
+                if (txt.matches(".*(?:kg|gross|net|cm|size|weight).*")) score += 20f;
+
+                float distToCenter = (float) Math.hypot(box.centerX() - centerX, box.centerY() - centerY);
+                float normDist = distToCenter / (float) Math.hypot(centerX, centerY);
+                score += (1.0f - normDist) * 25f;
+
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestAnchor = block;
+                }
+            }
+
+            if (bestAnchor == null) {
+                bestAnchor = blocks.get(0);
+            }
+
+            android.graphics.Rect anchorBox = bestAnchor.getBoundingBox();
+            if (anchorBox == null) {
+                anchorBox = new android.graphics.Rect((int)(imgW * 0.2f), (int)(imgH * 0.2f), (int)(imgW * 0.8f), (int)(imgH * 0.8f));
+            }
+
+            int minX = anchorBox.left;
+            int minY = anchorBox.top;
+            int maxX = anchorBox.right;
+            int maxY = anchorBox.bottom;
+
+            float maxDistX = imgW * 0.45f;
+            float maxDistY = imgH * 0.35f;
+
+            for (com.google.mlkit.vision.text.Text.TextBlock block : blocks) {
+                android.graphics.Rect box = block.getBoundingBox();
+                if (box == null) continue;
+                if (Math.abs(box.centerX() - anchorBox.centerX()) < maxDistX &&
+                    Math.abs(box.centerY() - anchorBox.centerY()) < maxDistY) {
+                    minX = Math.min(minX, box.left);
+                    minY = Math.min(minY, box.top);
+                    maxX = Math.max(maxX, box.right);
+                    maxY = Math.max(maxY, box.bottom);
+                }
+            }
+
+            int bw = maxX - minX;
+            int bh = maxY - minY;
+            int padX = Math.max((int)(bw * 0.40f), (int)(imgW * 0.12f));
+            int padY = Math.max((int)(bh * 0.45f), (int)(imgH * 0.15f));
+
+            int cropX = Math.max(0, minX - padX);
+            int cropY = Math.max(0, minY - padY);
+            int cropR = Math.min(imgW, maxX + padX);
+            int cropB = Math.min(imgH, maxY + padY);
+
+            int minW = (int)(imgW * 0.55f);
+            int minH = (int)(imgH * 0.40f);
+            if (cropR - cropX < minW) {
+                int diff = minW - (cropR - cropX);
+                cropX = Math.max(0, cropX - diff / 2);
+                cropR = Math.min(imgW, cropX + minW);
+            }
+            if (cropB - cropY < minH) {
+                int diff = minH - (cropB - cropY);
+                cropY = Math.max(0, cropY - diff / 2);
+                cropB = Math.min(imgH, cropY + minH);
+            }
+
+            return new android.graphics.Rect(cropX, cropY, cropR, cropB);
+        }
+
+        public static WarehouseScanResult parseWarehouseText(String text) {
+            if (text == null || text.trim().isEmpty()) return null;
+            WarehouseScanResult r = new WarehouseScanResult();
+            String[] lines = text.split("\\r?\\n");
+
+            // 1. Podatki o škatli (Box 1/2, 1/1, 2/2, 1/4)
+            java.util.regex.Pattern boxP = java.util.regex.Pattern.compile("(?:box|colli|del|part|[sš]katla)\\s*([0-9]{1,2})\\s*[/|\\\\]\\s*([0-9]{1,2})", java.util.regex.Pattern.CASE_INSENSITIVE);
+            for (String l : lines) {
+                java.util.regex.Matcher bm = boxP.matcher(l);
+                if (bm.find()) {
+                    try {
+                        int c = Integer.parseInt(bm.group(1));
+                        int t = Integer.parseInt(bm.group(2));
+                        if (c <= t && t <= 15) {
+                            r.boxCurrent = c;
+                            r.boxTotal = t;
+                            break;
+                        }
+                    } catch (Exception ignored) {}
+                }
+            }
+
+            // 2. Dvojna šifra: "3601257 / 78480001", "3670214/81006001", "Product no/3772020/56379001"
+            java.util.regex.Pattern dualP = java.util.regex.Pattern.compile("(?:product\\s*no[\\/.:\\s]*)?([0-9OTIl]{7})\\s*[/|\\\\I]\\s*([0-9OTIl]{8})", java.util.regex.Pattern.CASE_INSENSITIVE);
+            java.util.regex.Pattern fusedP = java.util.regex.Pattern.compile("\\b([3-6][0-9]{6})([5-9][0-9]{5}001|[5-9][0-9]{7})\\b");
+            for (String l : lines) {
+                java.util.regex.Matcher dm = dualP.matcher(l);
+                if (dm.find()) {
+                    String p = sanitizeDigits(dm.group(1));
+                    String s = sanitizeDigits(dm.group(2));
+                    if (isPrimaryValid(p)) r.primarySku = p;
+                    if (isSecondaryValid(s)) r.secondarySku = s;
+                    if (r.primarySku != null || r.secondarySku != null) break;
+                }
+                java.util.regex.Matcher fm = fusedP.matcher(l);
+                if (fm.find()) {
+                    String p = fm.group(1);
+                    String s = fm.group(2);
+                    if (isPrimaryValid(p)) r.primarySku = p;
+                    if (isSecondaryValid(s)) r.secondarySku = s;
+                    break;
+                }
+            }
+
+            // 3. Izrecna oznaka: "Product no.: 3699065", "Artikel: 3650044", "Item no.: 3601323"
+            if (r.primarySku == null) {
+                java.util.regex.Pattern expP = java.util.regex.Pattern.compile("(?:[jJ]?ysk\\s*)?(?:product\\s*(?:no\\.?|number)?|article(?:\\s*no\\.?)?|artikel|item(?:\\s*no\\.?)?|sku|šifra|koda)[\\s.:]*([0-9OTIl]{7})\\b", java.util.regex.Pattern.CASE_INSENSITIVE);
+                for (int i = 0; i < lines.length; i++) {
+                    java.util.regex.Matcher em = expP.matcher(lines[i]);
+                    if (em.find()) {
+                        String c = sanitizeDigits(em.group(1));
+                        if (isPrimaryValid(c)) {
+                            r.primarySku = c;
+                            break;
+                        }
+                    }
+                    if (lines[i].toLowerCase().matches(".*(?:product\\s*(?:no\\.?|number)?|article|artikel|item|sku)[\\s.:]*$") && i + 1 < lines.length) {
+                        java.util.regex.Matcher nm = java.util.regex.Pattern.compile("\\b([0-9OTIl]{7})\\b").matcher(lines[i + 1]);
+                        if (nm.find()) {
+                            String c = sanitizeDigits(nm.group(1));
+                            if (isPrimaryValid(c)) {
+                                r.primarySku = c;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 4. Vzorec s pomišljajem: "3650044 - Desk ASTRUP", "3610239-Desk", clipped "650203-"
+            if (r.primarySku == null) {
+                java.util.regex.Pattern dashP = java.util.regex.Pattern.compile("\\b([0-9OTIl]{7})\\s*[-–—]\\s*[a-zA-Z]");
+                java.util.regex.Pattern dash6P = java.util.regex.Pattern.compile("\\b([1-6][0-9]{5})\\s*[-–—]");
+                for (String l : lines) {
+                    java.util.regex.Matcher dm = dashP.matcher(l);
+                    if (dm.find()) {
+                        String c = sanitizeDigits(dm.group(1));
+                        if (c.startsWith("38")) c = "36" + c.substring(2);
+                        if (isPrimaryValid(c)) {
+                            r.primarySku = c;
+                            break;
+                        }
+                    }
+                    java.util.regex.Matcher dm6 = dash6P.matcher(l);
+                    if (dm6.find()) {
+                        String cand7 = "3" + dm6.group(1);
+                        if (isPrimaryValid(cand7)) {
+                            r.primarySku = cand7;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // 5. 8-mestna dobaviteljeva koda
+            if (r.secondarySku == null) {
+                java.util.regex.Pattern secP = java.util.regex.Pattern.compile("\\b([5-9][0-9]{5}001|[5-9][0-9]{7})\\b");
+                for (String l : lines) {
+                    if (l.toLowerCase().matches(".*(?:tel|phone|fax|order|batch|date).*")) continue;
+                    java.util.regex.Matcher sm = secP.matcher(l);
+                    if (sm.find()) {
+                        String c = sm.group(1);
+                        if (isSecondaryValid(c)) {
+                            r.secondarySku = c;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // 6. Splošna 7-mestna JYSK šifra
+            if (r.primarySku == null) {
+                java.util.regex.Pattern anyP = java.util.regex.Pattern.compile("\\b([346][0-9]{6})\\b");
+                for (String l : lines) {
+                    if (l.toLowerCase().matches(".*(?:order|batch|po|tel|phone|weight|gross|ean|barcode).*")) continue;
+                    java.util.regex.Matcher am = anyP.matcher(l);
+                    if (am.find()) {
+                        if (isPrimaryValid(am.group(1))) {
+                            r.primarySku = am.group(1);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // 7. EAN-13 / EAN-8 črtna koda iz besedila
+            for (String l : lines) {
+                String pureDigits = l.replaceAll("[^0-9]", "");
+                if ((pureDigits.length() == 13 || pureDigits.length() == 8) && isValidEanChecksum(pureDigits)) {
+                    r.barcode = pureDigits;
+                    break;
+                }
+            }
+
+            if (r.primarySku == null && r.secondarySku == null && r.barcode == null) return null;
+            return r;
+        }
+    }
+
     @CapacitorPlugin(name = "MLKitDirect")
     public static class MLKitDirectPlugin extends Plugin {
         private com.google.mlkit.vision.text.TextRecognizer recognizerInstance = null;
@@ -243,6 +528,227 @@ public class MainActivity extends BridgeActivity {
             super.handleOnDestroy();
         }
 
+        /**
+         * Enovita optimizirana metoda: Združuje neposredno branje datoteke / pomnilnika,
+         * dekodiranje z inSampleSize, ML Kit na 0 stopinjah, po potrebi na 180 stopinjah ali pametni izrez.
+         * Brez Base64 režije, brez prenosov platna (canvas) čez most!
+         */
+        @PluginMethod
+        public void recognizeOptimized(PluginCall call) {
+            final long startTime = System.currentTimeMillis();
+            Bitmap bitmap = null;
+            int origW = 0, origH = 0;
+
+            String filePath = call.getString("path");
+            if (filePath != null && !filePath.isEmpty()) {
+                if (filePath.startsWith("file://")) {
+                    filePath = filePath.substring(7);
+                }
+                File f = new File(filePath);
+                if (!f.exists()) {
+                    call.reject("Datoteka ne obstaja: " + filePath);
+                    return;
+                }
+
+                try (java.io.InputStream is1 = new java.io.BufferedInputStream(new java.io.FileInputStream(f), 32768)) {
+                    BitmapFactory.Options bOpts = new BitmapFactory.Options();
+                    bOpts.inJustDecodeBounds = true;
+                    BitmapFactory.decodeStream(is1, null, bOpts);
+                    origW = bOpts.outWidth;
+                    origH = bOpts.outHeight;
+                } catch (Exception ignored) {}
+
+                int targetDim = call.getInt("maxDim", 1280);
+                int sample = 1;
+                int maxD = Math.max(origW, origH);
+                while ((maxD / (sample * 2)) >= targetDim) {
+                    sample *= 2;
+                }
+
+                try (java.io.InputStream is2 = new java.io.BufferedInputStream(new java.io.FileInputStream(f), 65536)) {
+                    BitmapFactory.Options dOpts = new BitmapFactory.Options();
+                    dOpts.inSampleSize = sample;
+                    dOpts.inPreferredConfig = Bitmap.Config.RGB_565;
+                    bitmap = BitmapFactory.decodeStream(is2, null, dOpts);
+                } catch (Exception ignored) {}
+            } else {
+                String base64Data = call.getString("base64");
+                if (base64Data != null && !base64Data.isEmpty()) {
+                    if (base64Data.contains(",")) {
+                        base64Data = base64Data.substring(base64Data.indexOf(",") + 1);
+                    }
+                    byte[] bytes = Base64.decode(base64Data, Base64.DEFAULT);
+                    BitmapFactory.Options bOpts = new BitmapFactory.Options();
+                    bOpts.inJustDecodeBounds = true;
+                    BitmapFactory.decodeByteArray(bytes, 0, bytes.length, bOpts);
+                    origW = bOpts.outWidth;
+                    origH = bOpts.outHeight;
+
+                    int targetDim = call.getInt("maxDim", 1080);
+                    int sample = 1;
+                    int maxD = Math.max(origW, origH);
+                    while ((maxD / sample) > targetDim) {
+                        sample *= 2;
+                    }
+
+                    BitmapFactory.Options dOpts = new BitmapFactory.Options();
+                    dOpts.inSampleSize = sample;
+                    dOpts.inPreferredConfig = Bitmap.Config.RGB_565;
+                    bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.length, dOpts);
+                }
+            }
+
+            if (bitmap == null) {
+                call.reject("Slike ni bilo mogoče naložiti.");
+                return;
+            }
+
+            final Bitmap baseBmp = bitmap;
+            final int finalOrigW = origW;
+            final int finalOrigH = origH;
+            final long decodeMs = System.currentTimeMillis() - startTime;
+
+            // 1. Prehod: 0 stopinj na celotni (skalirani) sliki
+            InputImage img0 = InputImage.fromBitmap(baseBmp, 0);
+            getRecognizer().process(img0)
+                .addOnSuccessListener(res0 -> {
+                    String txt0 = (res0 != null) ? res0.getText() : "";
+                    WarehouseScanResult scan0 = WarehouseLabelHelper.parseWarehouseText(txt0);
+
+                    if (scan0 != null && (scan0.primarySku != null || scan0.secondarySku != null || scan0.barcode != null)) {
+                        long totalMs = System.currentTimeMillis() - startTime;
+                        sendOptimizedResult(call, scan0, txt0, res0.getTextBlocks(), baseBmp.getWidth(), baseBmp.getHeight(), finalOrigW, finalOrigH, decodeMs, totalMs, "native_0");
+                        if (!baseBmp.isRecycled()) baseBmp.recycle();
+                        return;
+                    }
+
+                    // 2. Prehod: 180 stopinj (obratne škatle)
+                    try {
+                        InputImage img180 = InputImage.fromBitmap(baseBmp, 180);
+                        getRecognizer().process(img180)
+                            .addOnSuccessListener(res180 -> {
+                                String txt180 = (res180 != null) ? res180.getText() : "";
+                                WarehouseScanResult scan180 = WarehouseLabelHelper.parseWarehouseText(txt180);
+
+                                if (scan180 != null && (scan180.primarySku != null || scan180.secondarySku != null || scan180.barcode != null)) {
+                                    long totalMs = System.currentTimeMillis() - startTime;
+                                    sendOptimizedResult(call, scan180, txt180, res180.getTextBlocks(), baseBmp.getWidth(), baseBmp.getHeight(), finalOrigW, finalOrigH, decodeMs, totalMs, "native_180");
+                                    if (!baseBmp.isRecycled()) baseBmp.recycle();
+                                    return;
+                                }
+
+                                // 3. Prehod: Nativni pametni izrez besedilnega grozda (Smart Cluster Crop)
+                                java.util.List<com.google.mlkit.vision.text.Text.TextBlock> blocks = (res0 != null) ? res0.getTextBlocks() : null;
+                                if (blocks != null && !blocks.isEmpty()) {
+                                    android.graphics.Rect cropBox = WarehouseLabelHelper.computeSmartClusterCrop(blocks, baseBmp.getWidth(), baseBmp.getHeight());
+                                    if (cropBox != null && cropBox.width() > 60 && cropBox.height() > 40) {
+                                        Bitmap cropped = Bitmap.createBitmap(baseBmp, cropBox.left, cropBox.top, cropBox.width(), cropBox.height());
+                                        InputImage imgCrop = InputImage.fromBitmap(cropped, 0);
+                                        getRecognizer().process(imgCrop)
+                                            .addOnSuccessListener(resCrop -> {
+                                                String txtCrop = (resCrop != null) ? resCrop.getText() : "";
+                                                WarehouseScanResult scanCrop = WarehouseLabelHelper.parseWarehouseText(txtCrop);
+                                                long totalMs = System.currentTimeMillis() - startTime;
+
+                                                if (scanCrop != null && (scanCrop.primarySku != null || scanCrop.secondarySku != null || scanCrop.barcode != null)) {
+                                                    sendOptimizedResult(call, scanCrop, txtCrop, resCrop.getTextBlocks(), cropped.getWidth(), cropped.getHeight(), finalOrigW, finalOrigH, decodeMs, totalMs, "native_cluster_crop");
+                                                } else {
+                                                    sendOptimizedFallback(call, txt0, res0.getTextBlocks(), totalMs);
+                                                }
+                                                if (!cropped.isRecycled()) cropped.recycle();
+                                                if (!baseBmp.isRecycled()) baseBmp.recycle();
+                                            })
+                                            .addOnFailureListener(e -> {
+                                                long totalMs = System.currentTimeMillis() - startTime;
+                                                sendOptimizedFallback(call, txt0, res0.getTextBlocks(), totalMs);
+                                                if (!cropped.isRecycled()) cropped.recycle();
+                                                if (!baseBmp.isRecycled()) baseBmp.recycle();
+                                            });
+                                        return;
+                                    }
+                                }
+
+                                long totalMs = System.currentTimeMillis() - startTime;
+                                sendOptimizedFallback(call, txt0, res0 != null ? res0.getTextBlocks() : null, totalMs);
+                                if (!baseBmp.isRecycled()) baseBmp.recycle();
+                            })
+                            .addOnFailureListener(e -> {
+                                long totalMs = System.currentTimeMillis() - startTime;
+                                sendOptimizedFallback(call, txt0, res0 != null ? res0.getTextBlocks() : null, totalMs);
+                                if (!baseBmp.isRecycled()) baseBmp.recycle();
+                            });
+                    } catch (Exception ex) {
+                        long totalMs = System.currentTimeMillis() - startTime;
+                        sendOptimizedFallback(call, txt0, res0 != null ? res0.getTextBlocks() : null, totalMs);
+                        if (!baseBmp.isRecycled()) baseBmp.recycle();
+                    }
+                })
+                .addOnFailureListener(e -> {
+                    if (!baseBmp.isRecycled()) baseBmp.recycle();
+                    call.reject(e.getMessage());
+                });
+        }
+
+        private void sendOptimizedResult(PluginCall call, WarehouseScanResult scanRes, String text,
+                                         java.util.List<com.google.mlkit.vision.text.Text.TextBlock> blocks,
+                                         int bmpW, int bmpH, int origW, int origH,
+                                         long decodeMs, long totalMs, String mode) {
+            JSObject ret = new JSObject();
+            ret.put("success", true);
+            String bestSku = (scanRes.primarySku != null && !scanRes.primarySku.isEmpty()) ? scanRes.primarySku : 
+                             (scanRes.secondarySku != null && !scanRes.secondarySku.isEmpty() ? scanRes.secondarySku : scanRes.barcode);
+            ret.put("sku", bestSku != null ? bestSku : "");
+            ret.put("articleNumber", bestSku != null ? bestSku : "");
+            ret.put("primarySku", scanRes.primarySku != null ? scanRes.primarySku : "");
+            ret.put("secondarySku", scanRes.secondarySku != null ? scanRes.secondarySku : "");
+            ret.put("barcode", scanRes.barcode != null ? scanRes.barcode : "");
+            ret.put("boxCurrent", scanRes.boxCurrent);
+            ret.put("boxTotal", scanRes.boxTotal);
+            ret.put("text", text);
+            ret.put("decodeMs", decodeMs);
+            ret.put("totalTimeMs", totalMs);
+            ret.put("mode", mode);
+
+            boolean includeBlocks = call.getBoolean("includeBlocks", false);
+            if (includeBlocks && blocks != null) {
+                com.getcapacitor.JSArray arr = new com.getcapacitor.JSArray();
+                for (com.google.mlkit.vision.text.Text.TextBlock b : blocks) {
+                    JSObject bo = new JSObject();
+                    bo.put("rawValue", b.getText());
+                    android.graphics.Rect r = b.getBoundingBox();
+                    if (r != null) {
+                        JSObject bb = new JSObject();
+                        bb.put("x", r.left);
+                        bb.put("y", r.top);
+                        bb.put("width", r.width());
+                        bb.put("height", r.height());
+                        bo.put("boundingBox", bb);
+                    }
+                    arr.put(bo);
+                }
+                ret.put("blocks", arr);
+            }
+            call.resolve(ret);
+        }
+
+        private void sendOptimizedFallback(PluginCall call, String text,
+                                           java.util.List<com.google.mlkit.vision.text.Text.TextBlock> blocks,
+                                           long totalMs) {
+            JSObject ret = new JSObject();
+            ret.put("success", false);
+            ret.put("sku", "");
+            ret.put("articleNumber", "");
+            ret.put("primarySku", "");
+            ret.put("secondarySku", "");
+            ret.put("barcode", "");
+            ret.put("boxCurrent", 1);
+            ret.put("boxTotal", 1);
+            ret.put("text", text != null ? text : "");
+            ret.put("totalTimeMs", totalMs);
+            ret.put("mode", "fallback");
+            call.resolve(ret);
+        }
+
         @PluginMethod
         public void recognizeBase64(PluginCall call) {
             String base64Data = call.getString("base64");
@@ -257,7 +763,23 @@ public class MainActivity extends BridgeActivity {
 
             try {
                 byte[] decodedBytes = Base64.decode(base64Data, Base64.DEFAULT);
-                Bitmap bitmap = BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.length);
+
+                // Hitro branje dimenzij za inSampleSize (preprečitev 50MB RAM alokacij)
+                BitmapFactory.Options bOpts = new BitmapFactory.Options();
+                bOpts.inJustDecodeBounds = true;
+                BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.length, bOpts);
+
+                int targetDim = call.getInt("maxDim", 1280);
+                int sample = 1;
+                int maxD = Math.max(bOpts.outWidth, bOpts.outHeight);
+                while (maxD / (sample * 2) >= targetDim) {
+                    sample *= 2;
+                }
+
+                BitmapFactory.Options opts = new BitmapFactory.Options();
+                opts.inSampleSize = sample;
+                opts.inPreferredConfig = Bitmap.Config.RGB_565;
+                Bitmap bitmap = BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.length, opts);
                 if (bitmap == null) {
                     call.reject("Could not decode bitmap");
                     return;
@@ -269,36 +791,40 @@ public class MainActivity extends BridgeActivity {
                         JSObject ret = new JSObject();
                         ret.put("text", result.getText());
 
-                        com.getcapacitor.JSArray blocksArray = new com.getcapacitor.JSArray();
-                        for (com.google.mlkit.vision.text.Text.TextBlock block : result.getTextBlocks()) {
-                            JSObject b = new JSObject();
-                            b.put("rawValue", block.getText());
-                            android.graphics.Rect box = block.getBoundingBox();
-                            if (box != null) {
-                                JSObject bb = new JSObject();
-                                bb.put("x", box.left);
-                                bb.put("y", box.top);
-                                bb.put("width", box.width());
-                                bb.put("height", box.height());
-                                b.put("boundingBox", bb);
+                        boolean includeBlocks = call.getBoolean("includeBlocks", false);
+                        if (includeBlocks) {
+                            com.getcapacitor.JSArray blocksArray = new com.getcapacitor.JSArray();
+                            for (com.google.mlkit.vision.text.Text.TextBlock block : result.getTextBlocks()) {
+                                JSObject b = new JSObject();
+                                b.put("rawValue", block.getText());
+                                android.graphics.Rect box = block.getBoundingBox();
+                                if (box != null) {
+                                    JSObject bb = new JSObject();
+                                    bb.put("x", box.left);
+                                    bb.put("y", box.top);
+                                    bb.put("width", box.width());
+                                    bb.put("height", box.height());
+                                    b.put("boundingBox", bb);
+                                }
+                                blocksArray.put(b);
                             }
-                            blocksArray.put(b);
+                            ret.put("blocks", blocksArray);
                         }
-                        ret.put("blocks", blocksArray);
                         call.resolve(ret);
                     })
                     .addOnFailureListener(e -> {
                         call.reject(e.getMessage());
+                    })
+                    .addOnCompleteListener(task -> {
+                        if (bitmap != null && !bitmap.isRecycled()) {
+                            bitmap.recycle();
+                        }
                     });
             } catch (Exception e) {
                 call.reject(e.getMessage());
             }
         }
 
-        /**
-         * Namenska metoda za strojno (ML) detekcijo položaja besedila v grobem (coarse) kadru
-         * Izračuna natančen bounding box teksta z varnostnim robom neposredno v nativni kodi (zelo hitro)
-         */
         @PluginMethod
         public void detectTextBoundsML(PluginCall call) {
             String base64Data = call.getString("base64");
@@ -335,75 +861,38 @@ public class MainActivity extends BridgeActivity {
                         if (blocks == null || blocks.isEmpty()) {
                             ret.put("hasText", false);
                             call.resolve(ret);
+                            if (!bitmap.isRecycled()) bitmap.recycle();
                             return;
                         }
 
-                        int minX = lowW;
-                        int minY = lowH;
-                        int maxX = 0;
-                        int maxY = 0;
-                        int validCount = 0;
-                        StringBuilder sb = new StringBuilder();
+                        android.graphics.Rect cluster = WarehouseLabelHelper.computeSmartClusterCrop(blocks, lowW, lowH);
 
-                        for (com.google.mlkit.vision.text.Text.TextBlock block : blocks) {
-                            String txt = block.getText() != null ? block.getText().trim() : "";
-                            if (txt.length() >= 2 && txt.matches(".*[a-zA-Z0-9].*")) {
-                                android.graphics.Rect box = block.getBoundingBox();
-                                if (box != null) {
-                                    minX = Math.min(minX, box.left);
-                                    minY = Math.min(minY, box.top);
-                                    maxX = Math.max(maxX, box.right);
-                                    maxY = Math.max(maxY, box.bottom);
-                                    validCount++;
-                                    if (sb.length() < 300) {
-                                        sb.append(txt).append("\n");
-                                    }
-                                }
-                            }
-                        }
-
-                        if (validCount == 0 || minX >= maxX || minY >= maxY) {
-                            ret.put("hasText", false);
-                            call.resolve(ret);
-                            return;
-                        }
-
-                        // Dodaj 18% varnostni rob
-                        int bw = maxX - minX;
-                        int bh = maxY - minY;
-                        int padX = (int) (bw * 0.18f);
-                        int padY = (int) (bh * 0.18f);
-
-                        int paddedMinX = Math.max(0, minX - padX);
-                        int paddedMinY = Math.max(0, minY - padY);
-                        int paddedMaxX = Math.min(lowW, maxX + padX);
-                        int paddedMaxY = Math.min(lowH, maxY + padY);
-
-                        // Preslikava na polno ločljivost
-                        int cropX = Math.max(0, Math.round(paddedMinX / scale));
-                        int cropY = Math.max(0, Math.round(paddedMinY / scale));
-                        int cropW = Math.min(fullW - cropX, Math.round((paddedMaxX - paddedMinX) / scale));
-                        int cropH = Math.min(fullH - cropY, Math.round((paddedMaxY - paddedMinY) / scale));
+                        int cropX = Math.max(0, Math.round(cluster.left / scale));
+                        int cropY = Math.max(0, Math.round(cluster.top / scale));
+                        int cropW = Math.min(fullW - cropX, Math.round(cluster.width() / scale));
+                        int cropH = Math.min(fullH - cropY, Math.round(cluster.height() / scale));
 
                         ret.put("hasText", true);
-                        ret.put("blocksCount", validCount);
-                        ret.put("detectedText", sb.toString());
+                        ret.put("blocksCount", blocks.size());
+                        ret.put("detectedText", result.getText());
 
                         JSObject tb = new JSObject();
                         tb.put("cropX", cropX);
                         tb.put("cropY", cropY);
                         tb.put("cropW", cropW);
                         tb.put("cropH", cropH);
-                        // Normalizirane koordinate za UI vizualno sledenje (HUD)
-                        tb.put("normLeft", (double) paddedMinX / lowW);
-                        tb.put("normTop", (double) paddedMinY / lowH);
-                        tb.put("normWidth", (double) (paddedMaxX - paddedMinX) / lowW);
-                        tb.put("normHeight", (double) (paddedMaxY - paddedMinY) / lowH);
+                        tb.put("angleDegrees", 0);
+                        tb.put("normLeft", (double) cluster.left / lowW);
+                        tb.put("normTop", (double) cluster.top / lowH);
+                        tb.put("normWidth", (double) cluster.width() / lowW);
+                        tb.put("normHeight", (double) cluster.height() / lowH);
 
                         ret.put("targetBox", tb);
                         call.resolve(ret);
+                        if (!bitmap.isRecycled()) bitmap.recycle();
                     })
                     .addOnFailureListener(e -> {
+                        if (!bitmap.isRecycled()) bitmap.recycle();
                         call.reject(e.getMessage());
                     });
             } catch (Exception e) {
@@ -837,40 +1326,59 @@ public class MainActivity extends BridgeActivity {
                             }
 
                             long now = System.currentTimeMillis();
-                            if (now - lastScanTime < 650) {
+                            if (now - lastScanTime < 250) {
                                 imageProxy.close();
                                 return;
                             }
 
-                            InputImage image = InputImage.fromMediaImage(mediaImage, imageProxy.getImageInfo().getRotationDegrees());
+                            int rotationDegrees = imageProxy.getImageInfo().getRotationDegrees();
+                            InputImage image0 = InputImage.fromMediaImage(mediaImage, rotationDegrees);
 
-                            // 1. Bliskovito skeniranje 1D/2D črtnih kod
-                            barcodeScanner.process(image)
+                            // 1. Hitro skeniranje črtnih kod (EAN-13, Code-128, QR)
+                            barcodeScanner.process(image0)
                                 .addOnSuccessListener(barcodes -> {
                                     if (barcodes != null && !barcodes.isEmpty()) {
                                         Barcode b = barcodes.get(0);
                                         String val = b.getRawValue();
                                         if (val != null && !val.trim().isEmpty()) {
                                             lastScanTime = System.currentTimeMillis();
-                                            handleScanSuccess(val.trim(), "barcode", b.getFormat());
+                                            handleScanSuccess(val.trim(), "", "", 1, 1, "barcode", b.getFormat());
                                             imageProxy.close();
                                             return;
                                         }
                                     }
 
-                                    // 2. Če ni črtne kode, poskusi OCR za 7-mestne JYSK šifre
-                                    textRecognizer.process(image)
+                                    // 2. OCR na 0 stopinj (standardna usmeritev)
+                                    textRecognizer.process(image0)
                                         .addOnSuccessListener(visionText -> {
-                                            if (visionText != null) {
-                                                String fullText = visionText.getText();
-                                                String sku = extractJyskSku(fullText);
-                                                if (sku != null) {
-                                                    lastScanTime = System.currentTimeMillis();
-                                                    handleScanSuccess(sku, "ocr", 0);
+                                            WarehouseScanResult res0 = (visionText != null) ? WarehouseLabelHelper.parseWarehouseText(visionText.getText()) : null;
+                                            if (res0 != null) {
+                                                lastScanTime = System.currentTimeMillis();
+                                                String bestVal = (res0.primarySku != null && !res0.primarySku.isEmpty()) ? res0.primarySku : 
+                                                                 (res0.secondarySku != null && !res0.secondarySku.isEmpty() ? res0.secondarySku : res0.barcode);
+                                                handleScanSuccess(bestVal, res0.primarySku != null ? res0.primarySku : "", res0.secondarySku != null ? res0.secondarySku : "", res0.boxCurrent, res0.boxTotal, "ocr", 0);
+                                                imageProxy.close();
+                                            } else {
+                                                // 3. OCR na 180 stopinj (obratne škatle na paletah / policah)
+                                                try {
+                                                    InputImage image180 = InputImage.fromMediaImage(mediaImage, (rotationDegrees + 180) % 360);
+                                                    textRecognizer.process(image180)
+                                                        .addOnSuccessListener(invText -> {
+                                                            WarehouseScanResult res180 = (invText != null) ? WarehouseLabelHelper.parseWarehouseText(invText.getText()) : null;
+                                                            if (res180 != null) {
+                                                                lastScanTime = System.currentTimeMillis();
+                                                                String bestVal = (res180.primarySku != null && !res180.primarySku.isEmpty()) ? res180.primarySku : 
+                                                                                 (res180.secondarySku != null && !res180.secondarySku.isEmpty() ? res180.secondarySku : res180.barcode);
+                                                                handleScanSuccess(bestVal, res180.primarySku != null ? res180.primarySku : "", res180.secondarySku != null ? res180.secondarySku : "", res180.boxCurrent, res180.boxTotal, "ocr_180", 0);
+                                                            }
+                                                        })
+                                                        .addOnCompleteListener(t -> imageProxy.close());
+                                                } catch (Exception ex) {
+                                                    imageProxy.close();
                                                 }
                                             }
                                         })
-                                        .addOnCompleteListener(t -> imageProxy.close());
+                                        .addOnFailureListener(e -> imageProxy.close());
                                 })
                                 .addOnFailureListener(e -> imageProxy.close());
                         }
@@ -898,17 +1406,7 @@ public class MainActivity extends BridgeActivity {
             }, androidx.core.content.ContextCompat.getMainExecutor(getActivity()));
         }
 
-        private String extractJyskSku(String text) {
-            if (text == null || text.isEmpty()) return null;
-            java.util.regex.Pattern p = java.util.regex.Pattern.compile("(?:artikel|art\\.?|šifra|sifra|koda)?\\s*\\b(3[0-9]{6}|4[0-9]{6}|[0-9]{7})\\b", java.util.regex.Pattern.CASE_INSENSITIVE);
-            java.util.regex.Matcher m = p.matcher(text);
-            if (m.find()) {
-                return m.group(1);
-            }
-            return null;
-        }
-
-        private void handleScanSuccess(String code, String type, int format) {
+        private void handleScanSuccess(String code, String primary, String secondary, int boxCur, int boxTot, String type, int format) {
             // Zvočni pisk
             try {
                 android.media.ToneGenerator toneG = new android.media.ToneGenerator(android.media.AudioManager.STREAM_MUSIC, 100);
@@ -930,6 +1428,10 @@ public class MainActivity extends BridgeActivity {
             getActivity().runOnUiThread(() -> {
                 JSObject ret = new JSObject();
                 ret.put("value", code);
+                ret.put("primarySku", primary != null ? primary : "");
+                ret.put("secondarySku", secondary != null ? secondary : "");
+                ret.put("boxCurrent", boxCur);
+                ret.put("boxTotal", boxTot);
                 ret.put("type", type);
                 ret.put("format", format);
 

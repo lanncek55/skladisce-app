@@ -70,6 +70,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
   await refreshInventory();
   updateActiveShelfPillDisplay();
+  await populateWarehouseSelectors();
 });
 
 /* =========================================================================
@@ -159,6 +160,7 @@ window.switchTab = function(targetId) {
   } else {
     startCamera();
     updateActiveShelfPillDisplay();
+    populateWarehouseSelectors();
   }
 
   // Osveži podatke za ustrezen zavihek
@@ -300,6 +302,94 @@ function setupTabNavigation() {
    3. ISKALNIK, FILTRI & PRIKAZ ZALOGE
    ========================================================================= */
 let currentWarehouseFilter = 'all';
+let cachedWarehouses = [
+  { id: 'zgornje', name: 'Zgornje skladišče (Soft)', isStore: false, isDefault: true, color: '#10b981' },
+  { id: 'spodnje', name: 'Spodnje skladišče (Pohištvo)', isStore: false, isDefault: true, color: '#f59e0b' },
+  { id: 'trgovina', name: 'Prodajalna (Police)', isStore: true, isDefault: true, color: '#38bdf8' }
+];
+
+function getActiveScannerWarehouse() {
+  try {
+    const session = getActiveReceivingSession();
+    if (session && session.active && session.warehouse && session.warehouse !== 'all') {
+      return session.warehouse;
+    }
+    return localStorage.getItem('skladisce_active_scan_warehouse') || 'zgornje';
+  } catch (e) {
+    return 'zgornje';
+  }
+}
+
+window.getActiveScannerWarehouse = getActiveScannerWarehouse;
+
+window.setActiveScannerWarehouse = function(whId) {
+  try {
+    localStorage.setItem('skladisce_active_scan_warehouse', whId);
+  } catch (e) {}
+  const sel = document.getElementById('activeScannerWarehouseSelect');
+  if (sel && sel.value !== whId) sel.value = whId;
+  const boxSel = document.getElementById('boxResultWarehouseSelect');
+  if (boxSel && boxSel.value !== whId) boxSel.value = whId;
+
+  const whObj = cachedWarehouses.find(w => w.id === whId);
+  if (whObj) {
+    showToast(`Izbrano skladišče: ${whObj.name}`);
+  }
+};
+
+window.onBoxResultWarehouseChange = function(whId) {
+  window.setActiveScannerWarehouse(whId);
+};
+
+window.populateWarehouseSelectors = async function() {
+  try {
+    const list = await DB.getWarehouses();
+    if (Array.isArray(list) && list.length > 0) {
+      cachedWarehouses = list;
+    }
+    const activeWh = getActiveScannerWarehouse();
+
+    // 1. Zgornja vrstica v zavihku čitalnika (tab-scanner)
+    const scanSel = document.getElementById('activeScannerWarehouseSelect');
+    if (scanSel) {
+      scanSel.innerHTML = cachedWarehouses.map(w => 
+        `<option value="${escapeHtml(w.id)}" ${w.id === activeWh ? 'selected' : ''}>🏢 ${escapeHtml(w.name)}</option>`
+      ).join('');
+    }
+
+    // 2. Prevzemna pošiljka (modalReceivingBatch)
+    const recSel = document.getElementById('recSessionWarehouseSelect');
+    if (recSel) {
+      const session = getActiveReceivingSession();
+      const currentRecWh = session ? (session.warehouse || 'all') : 'all';
+      let recOptions = `<option value="all" ${currentRecWh === 'all' ? 'selected' : ''}>🌐 Vsa skladišča (avtomatsko po artiklih)</option>`;
+      recOptions += cachedWarehouses.map(w => 
+        `<option value="${escapeHtml(w.id)}" ${w.id === currentRecWh ? 'selected' : ''}>🏢 ${escapeHtml(w.name)}</option>`
+      ).join('');
+      recSel.innerHTML = recOptions;
+    }
+
+    // 3. Hitra sprememba zaloge v zalogi (modalStockChange)
+    const stockChangeSel = document.getElementById('changeWarehouseSelect');
+    if (stockChangeSel) {
+      stockChangeSel.innerHTML = cachedWarehouses.map(w => 
+        `<option value="${escapeHtml(w.id)}" ${w.id === activeWh ? 'selected' : ''}>🏢 ${escapeHtml(w.name)}</option>`
+      ).join('');
+    }
+
+    // 4. Začetek nove prevzemne pošiljke (modalStartReceiving)
+    const startRecSel = document.getElementById('startReceivingWarehouseSelect');
+    if (startRecSel) {
+      let startOptions = `<option value="all">🌐 Vsa skladišča (avtomatsko po artiklih)</option>`;
+      startOptions += cachedWarehouses.map(w => 
+        `<option value="${escapeHtml(w.id)}" ${w.id === activeWh ? 'selected' : ''}>🏢 ${escapeHtml(w.name)}</option>`
+      ).join('');
+      startRecSel.innerHTML = startOptions;
+    }
+  } catch (e) {
+    console.warn('populateWarehouseSelectors error:', e);
+  }
+};
 
 function setupSearchAndFilters() {
   const searchInput = document.getElementById('searchInput');
@@ -783,6 +873,7 @@ function setupModals() {
       const direction = document.getElementById('changeDirection').value;
       const amount = Number(document.getElementById('changeAmount').value);
       const note = document.getElementById('changeNote').value;
+      const warehouse = document.getElementById('changeWarehouseSelect')?.value || getActiveScannerWarehouse();
 
       const delta = (direction === 'in') ? amount : -amount;
 
@@ -790,13 +881,15 @@ function setupModals() {
         if (direction === 'in') {
           const item = await DB.getItemById(itemId);
           if (item) {
-            await recordReceivingEntry(item.sku, item.name, 1, item.boxTotal || 1, item.location || 'Glavni regal', amount);
+            await recordReceivingEntry(item.sku, item.name, 1, item.boxTotal || 1, item.location || 'Glavni regal', amount, warehouse);
           }
         }
-        await DB.adjustStock(itemId, delta, note, direction);
+        await DB.adjustStock(itemId, delta, note, direction, null, null, warehouse);
         if (navigator.vibrate) navigator.vibrate(60);
         modalStockChange.style.display = 'none';
-        showToast(direction === 'in' ? `Prevzem +${amount} zabeležen` : `Izdaja -${amount} zabeležena`);
+        const whObj = cachedWarehouses.find(w => w.id === warehouse);
+        const whName = whObj ? whObj.name : warehouse;
+        showToast(direction === 'in' ? `Prevzem +${amount} zabeležen v ${whName}` : `Izdaja -${amount} zabeležena iz ${whName}`);
         await refreshInventory();
       } catch (err) {
         console.error(err);
@@ -946,16 +1039,26 @@ window.openStockChangeModal = async function(id, direction) {
 
   const title = document.getElementById('stockChangeTitle');
   const label = document.getElementById('changeAmountLabel');
+  const whLabel = document.getElementById('changeWarehouseLabel');
   const btn = document.getElementById('btnConfirmStockChange');
 
   if (direction === 'in') {
     title.textContent = 'Prevzem v skladišče';
     label.textContent = 'Količina prevzema (+)';
+    if (whLabel) whLabel.textContent = 'Skladišče prevzema';
     btn.textContent = 'Potrdi prevzem';
   } else {
     title.textContent = 'Izdaja iz skladišča';
     label.textContent = 'Količina izdaje (-)';
+    if (whLabel) whLabel.textContent = 'Skladišče izdaje';
     btn.textContent = 'Potrdi izdajo';
+  }
+
+  await populateWarehouseSelectors();
+  const whSelect = document.getElementById('changeWarehouseSelect');
+  if (whSelect) {
+    const itemWh = item.primaryWarehouse || item.warehouse || (item.categoryType === 'furniture' ? 'spodnje' : 'zgornje');
+    whSelect.value = itemWh || getActiveScannerWarehouse();
   }
 
   document.getElementById('modalStockChange').style.display = 'flex';
@@ -1094,22 +1197,26 @@ function saveActiveReceivingSession(session) {
   updateReceivingBannerUI();
 }
 
-function startReceivingSession(customName = '') {
+function startReceivingSession(customName = '', warehouse = 'all') {
   const dateStr = new Date().toLocaleDateString('sl-SI');
   const session = {
     id: 'rec_' + Date.now(),
     name: customName || `Prevzem ${dateStr}`,
+    warehouse: warehouse || 'all',
     startedAt: new Date().toISOString(),
     active: true,
     initialStock: {}, // { [sku]: { [boxNum]: number } }
-    entries: [] // Array<{ id, timestamp, sku, name, boxNum, boxTotal, shelf, count }>
+    entries: [] // Array<{ id, timestamp, sku, name, boxNum, boxTotal, shelf, warehouse, count }>
   };
   saveActiveReceivingSession(session);
+  if (warehouse && warehouse !== 'all') {
+    setActiveScannerWarehouse(warehouse);
+  }
   showToast(`Prevzem pošiljke "${session.name}" je zagnan.`);
   return session;
 }
 
-async function recordReceivingEntry(sku, name, boxNum, boxTotal, shelf, count) {
+async function recordReceivingEntry(sku, name, boxNum, boxTotal, shelf, count, warehouse = null) {
   const session = getActiveReceivingSession();
   if (!session || !session.active) return;
 
@@ -1117,6 +1224,7 @@ async function recordReceivingEntry(sku, name, boxNum, boxTotal, shelf, count) {
   const bNum = Math.max(1, parseInt(boxNum, 10) || 1);
   const bTotal = Math.max(1, parseInt(boxTotal, 10) || 1);
   const qty = Math.max(1, parseInt(count, 10) || 1);
+  const resolvedWh = warehouse || (session.warehouse && session.warehouse !== 'all' ? session.warehouse : getActiveScannerWarehouse());
 
   if (!session.initialStock) session.initialStock = {};
 
@@ -1147,6 +1255,7 @@ async function recordReceivingEntry(sku, name, boxNum, boxTotal, shelf, count) {
     boxNum: bNum,
     boxTotal: bTotal,
     shelf: shelf || 'Glavni regal',
+    warehouse: resolvedWh,
     count: qty
   });
 
@@ -1244,12 +1353,43 @@ window.handleReceivingBannerClick = function() {
   if (session && session.active) {
     openReceivingModal();
   } else {
-    const name = prompt('Vnesite naziv ali številko prevzemne pošiljke:', `Pošiljka ${new Date().toLocaleDateString('sl-SI')}`);
-    if (name !== null) {
-      startReceivingSession(name.trim());
-      switchTab('tab-scanner');
-    }
+    openStartReceivingModal();
   }
+};
+
+window.openStartReceivingModal = async function() {
+  await populateWarehouseSelectors();
+  const dateStr = new Date().toLocaleDateString('sl-SI');
+  const nameInput = document.getElementById('startRecNameInput');
+  if (nameInput) nameInput.value = `Pošiljka ${dateStr}`;
+  const modal = document.getElementById('modalStartReceiving');
+  if (modal) modal.style.display = 'flex';
+};
+
+window.closeStartReceivingModal = function() {
+  const modal = document.getElementById('modalStartReceiving');
+  if (modal) modal.style.display = 'none';
+};
+
+window.handleStartReceivingForm = function(event) {
+  if (event) event.preventDefault();
+  const name = document.getElementById('startRecNameInput')?.value?.trim() || `Pošiljka ${new Date().toLocaleDateString('sl-SI')}`;
+  const warehouse = document.getElementById('startReceivingWarehouseSelect')?.value || 'all';
+  startReceivingSession(name, warehouse);
+  closeStartReceivingModal();
+  switchTab('tab-scanner');
+};
+
+window.updateReceivingSessionWarehouse = function(whId) {
+  const session = getActiveReceivingSession();
+  if (!session) return;
+  session.warehouse = whId;
+  saveActiveReceivingSession(session);
+  if (whId !== 'all') {
+    setActiveScannerWarehouse(whId);
+  }
+  const whObj = cachedWarehouses.find(w => w.id === whId);
+  showToast(`Skladišče pošiljke: ${whObj ? whObj.name : 'Vsa skladišča'}`);
 };
 
 function updateReceivingBannerUI() {
@@ -1297,7 +1437,7 @@ function updateReceivingBannerUI() {
   }
 }
 
-window.openReceivingModal = function() {
+window.openReceivingModal = async function() {
   try {
     const session = getActiveReceivingSession();
     if (!session) {
@@ -1320,6 +1460,12 @@ window.openReceivingModal = function() {
         ? (new Date(session.startedAt).toLocaleDateString('sl-SI') + ' ob ' + new Date(session.startedAt).toLocaleTimeString('sl-SI', { hour: '2-digit', minute: '2-digit' }))
         : 'danes';
       dateEl.textContent = `Začetek prevzema: ${startDate}`;
+    }
+
+    await populateWarehouseSelectors();
+    const recSel = document.getElementById('recSessionWarehouseSelect');
+    if (recSel) {
+      recSel.value = session.warehouse || 'all';
     }
 
     const entries = Array.isArray(session.entries) ? session.entries : [];
@@ -1419,15 +1565,27 @@ window.openReceivingModal = function() {
       if (entries.length === 0) {
         allListEl.innerHTML = `<div style="font-size:0.8rem; color:var(--text-muted); padding:6px 0;">Ni prevzetih postavk.</div>`;
       } else {
-        allListEl.innerHTML = entries.slice().reverse().map(e => `
+        allListEl.innerHTML = entries.slice().reverse().map(e => {
+          const whBadgeClass = (e.warehouse === 'spodnje') ? 'wh-pill-spodnje' : (e.warehouse === 'trgovina' ? 'wh-pill-trgovina' : 'wh-pill-zgornje');
+          const whObj = cachedWarehouses.find(w => w.id === e.warehouse);
+          const whName = whObj ? whObj.name.split(' ')[0] : (e.warehouse || 'Zgornje');
+          return `
           <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; font-size: 0.78rem;">
             <div>
               <strong style="color: #fff;">${escapeHtml(e.name)}</strong>
-              <span style="color: var(--text-muted); font-size: 0.72rem;">(#${escapeHtml(e.sku)} &bull; Šk.${e.boxNum}/${e.boxTotal} &bull; ${escapeHtml(e.shelf)})</span>
+              <div style="color: var(--text-muted); font-size: 0.72rem; display: flex; gap: 5px; align-items: center; margin-top: 2px;">
+                <span>#${escapeHtml(e.sku)}</span>
+                <span>&bull;</span>
+                <span>Šk.${e.boxNum}/${e.boxTotal}</span>
+                <span>&bull;</span>
+                <span>${escapeHtml(e.shelf)}</span>
+                <span class="wh-pill ${whBadgeClass}" style="font-size: 0.65rem; padding: 1px 5px;">${escapeHtml(whName)}</span>
+              </div>
             </div>
             <div style="font-weight: 700; color: #10b981;">+${e.count} kos</div>
           </div>
-        `).join('');
+        `;
+        }).join('');
       }
     }
 
@@ -1574,7 +1732,9 @@ window.exportReceivingPDF = function(customSession = null) {
     doc.setTextColor(209, 250, 229);
     const startStr = new Date(session.startedAt).toLocaleDateString('sl-SI') + ' ob ' + new Date(session.startedAt).toLocaleTimeString('sl-SI', { hour: '2-digit', minute: '2-digit' });
     const printStr = new Date().toLocaleDateString('sl-SI') + ' ob ' + new Date().toLocaleTimeString('sl-SI', { hour: '2-digit', minute: '2-digit' });
-    doc.text(stripSlo(`Posiljka: "${session.name}" | Zacetek: ${startStr} | Natisnjeno: ${printStr}`), margin + 6, y + 16);
+    const whObj = cachedWarehouses.find(w => w.id === session.warehouse);
+    const whNameStr = whObj ? whObj.name : (session.warehouse === 'all' ? 'Vsa skladisca' : (session.warehouse || 'Vsa skladisca'));
+    doc.text(stripSlo(`Posiljka: "${session.name}" | Skladisce: ${whNameStr} | Zacetek: ${startStr}`), margin + 6, y + 16);
 
     y += 26;
 
@@ -2398,6 +2558,7 @@ let lastDetectedSKU = null;
 let lastDetectedBoxKey = null;
 let lastDetectedTime = 0;
 let lastCandidateSKU = null;
+let lastCandidateBox = null;
 
 // Strojni TextDetector (Android WebView / Chrome)
 let nativeTextDetector = null;
@@ -2767,7 +2928,7 @@ async function runAutoScanTick() {
 /**
  * Pomožna funkcija: Laplacian ostrenje robov na canvasu za reševanje zamegljenih slik ob tresenju roke
  */
-function applySharpenFilterToCanvas(canvas, strength = 1.25) {
+function applySharpenFilterToCanvas(canvas, strength = 1.35) {
   try {
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
@@ -2777,19 +2938,24 @@ function applySharpenFilterToCanvas(canvas, strength = 1.25) {
     const width = canvas.width;
     const height = canvas.height;
     const k = strength;
-    const center = 1 + 4 * k;
 
     for (let y = 1; y < height - 1; y++) {
       for (let x = 1; x < width - 1; x++) {
         const idx = (y * width + x) * 4;
         for (let c = 0; c < 3; c++) {
-          const top   = ((y - 1) * width + x) * 4 + c;
-          const bottom= ((y + 1) * width + x) * 4 + c;
-          const left  = (y * width + (x - 1)) * 4 + c;
-          const right = (y * width + (x + 1)) * 4 + c;
-          const curr  = idx + c;
-          const val = center * src[curr] - k * (src[top] + src[bottom] + src[left] + src[right]);
-          dst[curr] = Math.min(255, Math.max(0, val));
+          const top    = ((y - 1) * width + x) * 4 + c;
+          const bottom = ((y + 1) * width + x) * 4 + c;
+          const left   = (y * width + (x - 1)) * 4 + c;
+          const right  = (y * width + (x + 1)) * 4 + c;
+          const curr   = idx + c;
+          const neighborAvg = (src[top] + src[bottom] + src[left] + src[right]) * 0.25;
+          const diff = src[curr] - neighborAvg;
+          // Coring: zadušitev šuma pri majhnih razlikah, ojačanje robov pri večjih potezah besedila
+          if (Math.abs(diff) > 5.0) {
+            dst[curr] = Math.min(255, Math.max(0, src[curr] + diff * k * 2.2));
+          } else {
+            dst[curr] = src[curr];
+          }
         }
         dst[idx + 3] = 255;
       }
@@ -2807,73 +2973,23 @@ async function parseFrameWithOcr(canvas) {
   // 1. Primarno: Nativni Google ML Kit (Android aplikacija)
   if (window.Capacitor?.Plugins?.MLKitDirect) {
     try {
-      // PREHOD 1: Surovi zajem naravne ločljivosti
-      const base64 = canvas.toDataURL('image/jpeg', 0.82);
-      const res = await window.Capacitor.Plugins.MLKitDirect.recognizeBase64({ base64 });
-      let parsed = null;
+      const base64 = canvas.toDataURL('image/jpeg', 0.85);
+      const res = await window.Capacitor.Plugins.MLKitDirect.recognizeBase64({ 
+        base64,
+        includeBlocks: true
+      });
       if (res && res.text && res.text.trim()) {
-        parsed = WarehouseLabelParser.parse(res.text, res.blocks || null, {
+        const parsed = WarehouseLabelParser.parse(res.text, res.blocks || null, {
           knownSkus: getKnownSKUsSet(),
           imageCenter: { x: canvas.width / 2, y: canvas.height / 2 },
           imageWidth: canvas.width,
           imageHeight: canvas.height
         });
-      }
-
-      // PREHOD 2 (FALLBACK): Če ni najdene šifre artikla (npr. zamegljenost ob tresljaju roke),
-      // avtomatsko izvedemo Laplacian ostrenje robov in ponovimo razpoznavo
-      if (!parsed || !parsed.articleNumber) {
-        const sharpCanvas = document.createElement('canvas');
-        sharpCanvas.width = canvas.width;
-        sharpCanvas.height = canvas.height;
-        const sCtx = sharpCanvas.getContext('2d', { willReadFrequently: true });
-        sCtx.drawImage(canvas, 0, 0);
-        applySharpenFilterToCanvas(sharpCanvas, 1.25);
-
-        const sharpBase64 = sharpCanvas.toDataURL('image/jpeg', 0.82);
-        const res2 = await window.Capacitor.Plugins.MLKitDirect.recognizeBase64({ base64: sharpBase64 });
-        if (res2 && res2.text && res2.text.trim()) {
-          const parsed2 = WarehouseLabelParser.parse(res2.text, res2.blocks || null, {
-            knownSkus: getKnownSKUsSet(),
-            imageCenter: { x: canvas.width / 2, y: canvas.height / 2 },
-            imageWidth: canvas.width,
-            imageHeight: canvas.height
-          });
-          if (parsed2 && parsed2.articleNumber) {
-            return parsed2;
-          }
+        if (parsed && (parsed.articleNumber || parsed.secondarySku)) {
+          return parsed;
         }
       }
-
-      // PREHOD 3 (FALLBACK): Če še vedno ni šifre artikla (npr. oddaljen ali manjši paket),
-      // izvedemo prilagodljiv povečan sredinski izrez (Adaptive Center Crop)
-      if (!parsed || !parsed.articleNumber) {
-        const cw = Math.round(canvas.width * 0.65);
-        const ch = Math.round(canvas.height * 0.65);
-        if (cw > 100 && ch > 100) {
-          const cropCanvas = document.createElement('canvas');
-          cropCanvas.width = cw;
-          cropCanvas.height = ch;
-          const cCtx = cropCanvas.getContext('2d');
-          cCtx.drawImage(canvas, (canvas.width - cw) / 2, (canvas.height - ch) / 2, cw, ch, 0, 0, cw, ch);
-
-          const cropBase64 = cropCanvas.toDataURL('image/jpeg', 0.82);
-          const res3 = await window.Capacitor.Plugins.MLKitDirect.recognizeBase64({ base64: cropBase64 });
-          if (res3 && res3.text && res3.text.trim()) {
-            const parsed3 = WarehouseLabelParser.parse(res3.text, res3.blocks || null, {
-              knownSkus: getKnownSKUsSet(),
-              imageCenter: { x: cw / 2, y: ch / 2 },
-              imageWidth: cw,
-              imageHeight: ch
-            });
-            if (parsed3 && parsed3.articleNumber) {
-              return parsed3;
-            }
-          }
-        }
-      }
-
-      return parsed;
+      return null;
     } catch (e) {
       console.warn('MLKitDirect napaka:', e);
       return null;
@@ -2914,7 +3030,10 @@ async function processAutoScanFrame(video) {
 
   try {
     // 1. Dvostopenjski zajem: nizkoresolucijska detekcija lokacije teksta + 1:1 polnoresolucijski izrez
-    const { canvas: frameCanvas, hasContent } = await getHierarchicalTextCrop(video);
+    const cropResult = await getHierarchicalTextCrop(video);
+    const frameCanvas = cropResult.canvas;
+    const hasContent = cropResult.hasContent;
+    const frameSharpness = cropResult.sharpness || 5.0;
 
     // Če ni dovolj kontrasta (premikanje telefona, prazna tla ali lepenka brez črk), takoj preskoči!
     if (!hasContent) {
@@ -2948,31 +3067,72 @@ async function processAutoScanFrame(video) {
       return;
     }
 
-    // 3. Preverjanje zanesljivosti:
-    // Če ima visoko oceno (oznaka etiket, JYSK poševnica, pomišljaj, prepoznano ime ali je artikel v bazi),
-    // sprožimo prepoznavo TAKOJ brez zamud!
-    const isHighConfidence = (frameResult.score || 0) >= 80 || (frameResult.name && !frameResult.name.startsWith('Artikel '));
-    const isKnown = getKnownSKUsSet().has(frameResult.articleNumber);
+    // 3. Preverjanje zanesljivosti in semantični cross-check:
+    // A) Artikel v lokalni bazi
+    const knownItem = (Array.isArray(cachedItems) ? cachedItems : []).find(it => it && String(it.sku).trim() === frameResult.articleNumber);
+    let semanticMatch = false;
 
-    let confirmed = isHighConfidence || isKnown;
+    // B) Semantično ujemanje naziva: preveri ali OCR ime vsebuje ključne besede naziva iz baze
+    if (knownItem && frameResult.name && !frameResult.name.startsWith('Artikel ')) {
+      const dbWords = (knownItem.name || '').toLowerCase().split(/[\s,.\-\/]+/);
+      const ocrWords = frameResult.name.toLowerCase().split(/[\s,.\-\/]+/);
+      for (const w of ocrWords) {
+        if (w.length >= 4 && dbWords.includes(w)) {
+          semanticMatch = true;
+          break;
+        }
+      }
+    }
 
-    // Če gre za šibko/izolirano številko, opravimo hitro potrditev z naslednjo sličico (40ms)
+    // C) Matematična EAN Modulo-10 kontrolna vsota
+    let validBarcode = false;
+    if (frameResult.barcode) {
+      validBarcode = WarehouseLabelParser.isValidEanChecksum?.(frameResult.barcode);
+    }
+
+    // D) Preverjanje nevarnosti zamenjave barvnih/dimenzijskih variant v bazi (1-mestna razlika v SKU)
+    let hasCloseVariantInDB = false;
+    if (Array.isArray(cachedItems)) {
+      for (const it of cachedItems) {
+        const otherSku = String(it.sku || '').trim();
+        if (otherSku && otherSku !== frameResult.articleNumber && otherSku.length === frameResult.articleNumber.length) {
+          let diffs = 0;
+          for (let k = 0; k < otherSku.length; k++) {
+            if (otherSku[k] !== frameResult.articleNumber[k]) diffs++;
+          }
+          if (diffs === 1) {
+            hasCloseVariantInDB = true;
+            break;
+          }
+        }
+      }
+    }
+
+    // Pogoji za takojšnjo potrditev (brez potrebe po drugem kadru):
+    // - Semantično potrjen naziv z bazo ALI veljavna matematična EAN črtna koda
+    // - Zadostna optična ostrina (>= 4.2)
+    // - Ni nevarnosti 1-mestne barvne zamenjave v skladišču
+    const isRockSolid = (semanticMatch || validBarcode) && frameSharpness >= 4.2 && !hasCloseVariantInDB;
+    let confirmed = isRockSolid;
+
+    // Če ni 100% nesporno, izvedemo hitri 2-kaderni konsenz (temporal burst consensus):
     if (!confirmed) {
-      if (lastCandidateSKU === frameResult.articleNumber) {
+      if (lastCandidateSKU === frameResult.articleNumber && lastCandidateBox === (frameResult.boxCurrent || 1)) {
         confirmed = true;
       } else {
         lastCandidateSKU = frameResult.articleNumber;
-        await new Promise(r => setTimeout(r, 40));
+        lastCandidateBox = frameResult.boxCurrent || 1;
+        await new Promise(r => setTimeout(r, 35));
         if (!isScanLoopRunning) {
           isProcessingFrame = false;
           return;
         }
         const nextCrop = await getHierarchicalTextCrop(video);
-        if (nextCrop && nextCrop.canvas) {
+        if (nextCrop && nextCrop.canvas && nextCrop.hasContent) {
           const nextRes = await parseFrameWithOcr(nextCrop.canvas);
-          if (nextRes && nextRes.articleNumber === frameResult.articleNumber) {
+          if (nextRes && nextRes.articleNumber === frameResult.articleNumber && (nextRes.boxCurrent || 1) === (frameResult.boxCurrent || 1)) {
             confirmed = true;
-            if ((nextRes.score || 0) > (frameResult.score || 0)) {
+            if ((nextRes.score || 0) + (nextCrop.sharpness || 0) * 2 > (frameResult.score || 0) + frameSharpness * 2) {
               frameResult = nextRes;
             }
           }
@@ -3002,6 +3162,7 @@ async function processAutoScanFrame(video) {
       lastDetectedSKU = parsed.articleNumber;
       lastDetectedTime = now;
       lastCandidateSKU = null;
+      lastCandidateBox = null;
 
       // Zvočni in haptični signal
       playSuccessBeep();
@@ -3222,8 +3383,8 @@ async function getHierarchicalTextCrop(source) {
   const fullW = source.videoWidth || source.naturalWidth || source.width || 1920;
   const fullH = source.videoHeight || source.naturalHeight || source.height || 1080;
 
-  // 1. KORAK: Priprava nizkoresolucijskega okvirja (Coarse frame na 480px širine)
-  const lowScale = Math.min(1.0, 480 / fullW);
+  // 1. KORAK: Priprava nizkoresolucijskega okvirja (Coarse frame na 720px širine)
+  const lowScale = Math.min(1.0, 720 / fullW);
   const lowW = Math.round(fullW * lowScale);
   const lowH = Math.round(fullH * lowScale);
 
@@ -3238,7 +3399,7 @@ async function getHierarchicalTextCrop(source) {
   // A) Namenska strojna ML detekcija tekstovnih blokov (Google ML Kit na ravni nativne Jave z minimalno zakasnitvijo)
   if (window.Capacitor?.Plugins?.MLKitDirect?.detectTextBoundsML) {
     try {
-      const lowB64 = lowCanvas.toDataURL('image/jpeg', 0.65);
+      const lowB64 = lowCanvas.toDataURL('image/jpeg', 0.85);
       const mlRes = await window.Capacitor.Plugins.MLKitDirect.detectTextBoundsML({
         base64: lowB64,
         fullW: fullW,
@@ -3253,7 +3414,7 @@ async function getHierarchicalTextCrop(source) {
     }
   } else if (window.Capacitor?.Plugins?.MLKitDirect) {
     try {
-      const lowB64 = lowCanvas.toDataURL('image/jpeg', 0.65);
+      const lowB64 = lowCanvas.toDataURL('image/jpeg', 0.85);
       const lowRes = await window.Capacitor.Plugins.MLKitDirect.recognizeBase64({ base64: lowB64 });
       if (lowRes && Array.isArray(lowRes.blocks) && lowRes.blocks.length > 0) {
         targetBox = extractBoundingBoxFromTextBlocks(lowRes.blocks, lowScale, fullW, fullH);
@@ -3300,11 +3461,29 @@ async function getHierarchicalTextCrop(source) {
   highCanvas.width = targetBox.cropW;
   highCanvas.height = targetBox.cropH;
   const highCtx = highCanvas.getContext('2d', { willReadFrequently: true });
-  highCtx.drawImage(source, targetBox.cropX, targetBox.cropY, targetBox.cropW, targetBox.cropH, 0, 0, targetBox.cropW, targetBox.cropH);
 
-  const hasContent = preprocessAndCheckContrast(highCanvas, highCtx);
+  const angle = targetBox.angleDegrees || 0;
+  if (Math.abs(angle) >= 2.5 && Math.abs(angle) <= 45.0) {
+    // Poravnava naklona (deskewing) - rotiramo platno nazaj v vodoravni položaj
+    highCtx.save();
+    highCtx.translate(targetBox.cropW / 2, targetBox.cropH / 2);
+    highCtx.rotate(-angle * Math.PI / 180);
+    highCtx.drawImage(
+      source,
+      targetBox.cropX, targetBox.cropY, targetBox.cropW, targetBox.cropH,
+      -targetBox.cropW / 2, -targetBox.cropH / 2, targetBox.cropW, targetBox.cropH
+    );
+    highCtx.restore();
+  } else {
+    highCtx.drawImage(source, targetBox.cropX, targetBox.cropY, targetBox.cropW, targetBox.cropH, 0, 0, targetBox.cropW, targetBox.cropH);
+  }
 
-  return { canvas: highCanvas, hasContent, targetBox };
+  // Lokalna prilagodljiva normalizacija kontrasta in odprava odsevov folije
+  applyAdaptiveContrastNormalization(highCanvas, highCtx);
+
+  const check = preprocessAndCheckContrast(highCanvas, highCtx);
+
+  return { canvas: highCanvas, hasContent: check.hasContent, sharpness: check.sharpness, targetBox };
 }
 
 /**
@@ -3368,10 +3547,26 @@ function extractHierarchicalLabelCrop(source) {
   highCanvas.width = targetBox.cropW;
   highCanvas.height = targetBox.cropH;
   const highCtx = highCanvas.getContext('2d', { willReadFrequently: true });
-  highCtx.drawImage(source, targetBox.cropX, targetBox.cropY, targetBox.cropW, targetBox.cropH, 0, 0, targetBox.cropW, targetBox.cropH);
 
-  const hasContent = preprocessAndCheckContrast(highCanvas, highCtx);
-  return { canvas: highCanvas, hasContent, targetBox };
+  const angle = targetBox.angleDegrees || 0;
+  if (Math.abs(angle) >= 2.5 && Math.abs(angle) <= 45.0) {
+    highCtx.save();
+    highCtx.translate(targetBox.cropW / 2, targetBox.cropH / 2);
+    highCtx.rotate(-angle * Math.PI / 180);
+    highCtx.drawImage(
+      source,
+      targetBox.cropX, targetBox.cropY, targetBox.cropW, targetBox.cropH,
+      -targetBox.cropW / 2, -targetBox.cropH / 2, targetBox.cropW, targetBox.cropH
+    );
+    highCtx.restore();
+  } else {
+    highCtx.drawImage(source, targetBox.cropX, targetBox.cropY, targetBox.cropW, targetBox.cropH, 0, 0, targetBox.cropW, targetBox.cropH);
+  }
+
+  applyAdaptiveContrastNormalization(highCanvas, highCtx);
+
+  const check = preprocessAndCheckContrast(highCanvas, highCtx);
+  return { canvas: highCanvas, hasContent: check.hasContent, sharpness: check.sharpness, targetBox };
 }
 
 /**
@@ -3381,6 +3576,8 @@ function extractBoundingBoxFromTextBlocks(blocks, scale, fullW, fullH) {
   try {
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     let count = 0;
+    let angleSum = 0;
+    let angleCount = 0;
 
     for (const blk of blocks) {
       const b = blk.boundingBox || blk;
@@ -3396,14 +3593,27 @@ function extractBoundingBoxFromTextBlocks(blocks, scale, fullW, fullH) {
         maxX = Math.max(maxX, l + w);
         maxY = Math.max(maxY, t + h);
         count++;
+
+        const corners = blk.cornerPoints || blk.corners;
+        if (corners && corners.length >= 2) {
+          const dx = corners[1].x - corners[0].x;
+          const dy = corners[1].y - corners[0].y;
+          if (Math.abs(dx) > 15) {
+            const ang = Math.atan2(dy, dx) * 180 / Math.PI;
+            if (Math.abs(ang) <= 45.0) {
+              angleSum += ang;
+              angleCount++;
+            }
+          }
+        }
       }
     }
 
     if (count > 0 && minX < maxX && minY < maxY) {
       const bw = maxX - minX;
       const bh = maxY - minY;
-      const padX = bw * 0.18; // 18% varnostni rob
-      const padY = bh * 0.18;
+      const padX = Math.max(bw * 0.28, 40 * scale);
+      const padY = Math.max(bh * 0.50, 90 * scale);
 
       const cropX = Math.max(0, Math.round((minX - padX) / scale));
       const cropY = Math.max(0, Math.round((minY - padY) / scale));
@@ -3414,9 +3624,10 @@ function extractBoundingBoxFromTextBlocks(blocks, scale, fullW, fullH) {
       const normTop = Math.max(0, (minY - padY) / (fullH * scale));
       const normWidth = Math.min(1.0 - normLeft, (bw + 2 * padX) / (fullW * scale));
       const normHeight = Math.min(1.0 - normTop, (bh + 2 * padY) / (fullH * scale));
+      const dominantAngle = angleCount > 0 ? (angleSum / angleCount) : 0;
 
       if (cropW > 100 && cropH > 60) {
-        return { cropX, cropY, cropW, cropH, normLeft, normTop, normWidth, normHeight };
+        return { cropX, cropY, cropW, cropH, normLeft, normTop, normWidth, normHeight, angleDegrees: dominantAngle };
       }
     }
   } catch (e) {}
@@ -3499,8 +3710,8 @@ function detectTextClusterBounds(canvas, ctx, scale, fullW, fullH) {
 
       const bw = maxX - minX;
       const bh = maxY - minY;
-      const padX = bw * 0.18;
-      const padY = bh * 0.18;
+      const padX = Math.max(bw * 0.28, 40 * scale);
+      const padY = Math.max(bh * 0.50, 90 * scale);
 
       const cropX = Math.max(0, Math.round((minX - padX) / scale));
       const cropY = Math.max(0, Math.round((minY - padY) / scale));
@@ -3527,17 +3738,90 @@ function getCroppedCanvasFromVideo(video) {
 }
 
 /**
+ * Prilagodljiva lokalna normalizacija kontrasta in zmanjševanje bleščanja na izrezu etikete
+ * (odpravi odseve stropnih luči na prozorni zaščitni foliji in zviša kontrast črnega tiska na rjavi lepenki)
+ */
+function applyAdaptiveContrastNormalization(canvas, ctx) {
+  try {
+    const w = canvas.width;
+    const h = canvas.height;
+    if (w < 40 || h < 40) return;
+    const imgData = ctx.getImageData(0, 0, w, h);
+    const d = imgData.data;
+    const len = d.length;
+
+    // 1. Hitri histogram za določitev 2. in 98. percentila svetlosti
+    const hist = new Uint32Array(256);
+    for (let i = 0; i < len; i += 4) {
+      const y = (d[i] * 77 + d[i + 1] * 150 + d[i + 2] * 29) >> 8;
+      hist[y]++;
+    }
+
+    const totalPixels = w * h;
+    const lowCut = Math.floor(totalPixels * 0.02);
+    const highCut = Math.floor(totalPixels * 0.98);
+
+    let acc = 0;
+    let minLum = 0;
+    for (let i = 0; i < 256; i++) {
+      acc += hist[i];
+      if (acc >= lowCut) { minLum = i; break; }
+    }
+
+    acc = 0;
+    let maxLum = 255;
+    for (let i = 255; i >= 0; i--) {
+      acc += hist[i];
+      if (acc >= (totalPixels - highCut)) { maxLum = i; break; }
+    }
+
+    const range = maxLum - minLum;
+    if (range >= 180 || range <= 15) return;
+
+    let sumLum = 0;
+    for (let i = 0; i < 256; i++) {
+      sumLum += i * hist[i];
+    }
+    const avgLum = sumLum / (totalPixels || 1);
+
+    // Če je slika temna (avgLum < 105), uporabimo gama ekspanzijo (dvig senc in lepenke)
+    const gamma = (avgLum < 105) ? 0.70 : 1.0;
+
+    // LUT tabela za raztegovanje dinamike z gama korekcijo
+    const lut = new Uint8Array(256);
+    for (let i = 0; i < 256; i++) {
+      if (i <= minLum) lut[i] = 0;
+      else if (i >= maxLum) lut[i] = 255;
+      else {
+        const norm = (i - minLum) / range;
+        lut[i] = (gamma === 1.0) ? Math.round(norm * 255) : Math.round(Math.pow(norm, gamma) * 255);
+      }
+    }
+
+    for (let i = 0; i < len; i += 4) {
+      d[i] = lut[d[i]];
+      d[i + 1] = lut[d[i + 1]];
+      d[i + 2] = lut[d[i + 2]];
+    }
+
+    ctx.putImageData(imgData, 0, 0);
+  } catch (e) {
+    console.warn('applyAdaptiveContrastNormalization opozorilo:', e);
+  }
+}
+
+/**
  * Hiter pregled prisotnosti vsebine in ostrine v kadru (preprečevanje zamegljenih posnetkov med zamahom)
  */
 function preprocessAndCheckContrast(canvas, ctx) {
   try {
     const w = canvas.width;
     const h = canvas.height;
-    if (w < 60 || h < 60) return true;
+    if (w < 60 || h < 60) return { hasContent: true, sharpness: 10.0 };
 
     // Hiter vzorec osrednjega območja
-    const sampleW = Math.min(120, Math.floor(w * 0.35));
-    const sampleH = Math.min(80, Math.floor(h * 0.35));
+    const sampleW = Math.min(160, Math.floor(w * 0.45));
+    const sampleH = Math.min(100, Math.floor(h * 0.45));
     const startX = Math.floor((w - sampleW) / 2);
     const startY = Math.floor((h - sampleH) / 2);
     const data = ctx.getImageData(startX, startY, sampleW, sampleH).data;
@@ -3545,16 +3829,17 @@ function preprocessAndCheckContrast(canvas, ctx) {
     let edgeDiff = 0;
     let count = 0;
     for (let i = 0; i < data.length - 8; i += 8) {
-      const l1 = (data[i] + data[i + 1] + data[i + 2]) / 3;
-      const l2 = (data[i + 4] + data[i + 5] + data[i + 6]) / 3;
+      const l1 = (data[i] * 77 + data[i + 1] * 150 + data[i + 2] * 29) >> 8;
+      const l2 = (data[i + 4] * 77 + data[i + 5] * 150 + data[i + 6] * 29) >> 8;
       edgeDiff += Math.abs(l1 - l2);
       count++;
     }
     const avgEnergy = edgeDiff / (count || 1);
     // Če je energija robov premajhna (< 1.8), je slika prazna lepenka/tla ali povsem zamegljena med zamahom
-    if (avgEnergy < 1.8) return false;
-  } catch (e) {}
-  return true;
+    return { hasContent: avgEnergy >= 1.8, sharpness: avgEnergy };
+  } catch (e) {
+    return { hasContent: true, sharpness: 5.0 };
+  }
 }
 
 /**
@@ -3614,6 +3899,7 @@ async function handleBoxScanResult(parsed) {
 
   renderBoxResultCard(existingItem);
 }
+window.handleBoxScanResult = handleBoxScanResult;
 
 /* =========================================================================
    POMOČ PRI IZDAJI BLAGA PO RAČUNU (VODENJE PO REGALIH)
@@ -4010,6 +4296,14 @@ function renderBoxResultCard(existingItem) {
     ? existingItem.boxes[boxNum].location 
     : (existingItem ? existingItem.location : '');
 
+  const activeScannerWh = getActiveScannerWarehouse();
+  let currentSelectedWh = activeScannerWh;
+  if (existingItem) {
+    if (existingItem.primaryWarehouse) currentSelectedWh = existingItem.primaryWarehouse;
+    else if (existingItem.warehouse) currentSelectedWh = existingItem.warehouse;
+    else if (existingItem.categoryType === 'furniture' && activeScannerWh === 'zgornje') currentSelectedWh = 'spodnje';
+  }
+
   // 1. Samodejno prekopiraj regal prejšnjega artikla:
   // Če je bil predhodno že vnesen/uporabljen regal (lastUsedShelf), ga samodejno prekopiramo v ta artikel.
   let currentBoxLoc = lastUsedShelf || existingBoxLoc || '';
@@ -4132,6 +4426,23 @@ function renderBoxResultCard(existingItem) {
     </div>
 
     ${smartShelfHintHtml}
+
+    <!-- Izbira skladišča za to posamezno škatlo / prevzem -->
+    <div style="background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: var(--radius-sm); padding: 6px 10px; margin: 3px 0;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 3px;">
+        <span style="font-size: 0.72rem; color: #10b981; font-weight: 700; text-transform: uppercase;">
+          🏢 Skladišče za prevzem:
+        </span>
+        <span style="font-size: 0.68rem; color: var(--text-muted);">kam gre zaloga</span>
+      </div>
+      <select id="boxResultWarehouseSelect" class="form-control" style="padding: 6px 10px; font-weight: 700; font-size: 0.88rem; background: rgba(0,0,0,0.45); border-color: rgba(16, 185, 129, 0.5); color: #fff;" onchange="onBoxResultWarehouseChange(this.value)">
+        ${(cachedWarehouses.length > 0 ? cachedWarehouses : [
+          { id: 'zgornje', name: 'Zgornje skladišče (Soft)' },
+          { id: 'spodnje', name: 'Spodnje skladišče (Pohištvo)' },
+          { id: 'trgovina', name: 'Prodajalna (Police)' }
+        ]).map(w => `<option value="${escapeHtml(w.id)}" ${w.id === currentSelectedWh ? 'selected' : ''}>🏢 ${escapeHtml(w.name)}</option>`).join('')}
+      </select>
+    </div>
 
     <!-- Vnos / urejanje lokacije za to posamezno škatlo -->
     <div style="background: rgba(56, 189, 248, 0.08); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: var(--radius-sm); padding: 6px 10px; margin: 3px 0;">
@@ -4302,6 +4613,7 @@ window.executeBoxStockChange = async function(direction) {
   const totalAmount = piecesPerBox * boxCount;
 
   const chosenName = document.getElementById('boxResultNameInput')?.value?.trim() || currentScannedBox.name || `Artikel ${sku}`;
+  const chosenWarehouse = document.getElementById('boxResultWarehouseSelect')?.value || getActiveScannerWarehouse() || 'zgornje';
   const boxLocation = document.getElementById('boxResultLocationInput')?.value?.trim() || '';
   if (boxLocation) {
     lastUsedShelf = boxLocation;
@@ -4318,6 +4630,7 @@ window.executeBoxStockChange = async function(direction) {
     for (let b = 1; b <= boxTotal; b++) {
       boxes[b] = {
         count: 0,
+        warehouse: chosenWarehouse,
         location: (b === boxNum && boxLocation) ? boxLocation : (boxLocation || 'Prevzemno območje')
       };
     }
@@ -4332,6 +4645,7 @@ window.executeBoxStockChange = async function(direction) {
       boxes: boxes,
       unit: (boxTotal > 1) ? 'garnitura' : 'kos',
       category: 'Splošno',
+      warehouse: chosenWarehouse,
       location: boxLocation || 'Prevzemno območje'
     });
     const newId = (typeof res === 'object' && res.sku) ? res.sku : (res.id || res);
@@ -4343,7 +4657,7 @@ window.executeBoxStockChange = async function(direction) {
 
   // Če je prevzem in je aktivna prevzemna pošiljka, zabeleži vnos
   if (direction === 'in') {
-    await recordReceivingEntry(item.sku, chosenName, boxNum, boxTotal, boxLocation || 'Glavni regal', totalAmount);
+    await recordReceivingEntry(item.sku, chosenName, boxNum, boxTotal, boxLocation || 'Glavni regal', totalAmount, chosenWarehouse);
   }
 
   const note = (piecesPerBox > 1)
@@ -4351,11 +4665,13 @@ window.executeBoxStockChange = async function(direction) {
     : `${boxCount}x škatla (${boxNum}/${boxTotal})`;
   const delta = (direction === 'in') ? totalAmount : -totalAmount;
 
-  await DB.adjustStock(item.sku, delta, note, direction, boxNum, boxLocation);
+  await DB.adjustStock(item.sku, delta, note, direction, boxNum, boxLocation, chosenWarehouse);
   if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
 
   const unitDesc = (piecesPerBox > 1) ? `${totalAmount} kos (${boxCount} škat.)` : `${totalAmount} škatel`;
-  showToast(direction === 'in' ? `Prevzeto: +${unitDesc} (${chosenName})` : `Izdano: -${unitDesc} (${chosenName})`);
+  const whObj = cachedWarehouses.find(w => w.id === chosenWarehouse);
+  const whName = whObj ? whObj.name : chosenWarehouse;
+  showToast(direction === 'in' ? `Prevzeto: +${unitDesc} (${chosenName}) v ${whName}` : `Izdano: -${unitDesc} (${chosenName})`);
 
   // Takoj ponastavi cooldown, da je kamera v trenutku pripravljena na naslednjo škatlo
   lastDetectedBoxKey = null;
@@ -7335,6 +7651,7 @@ window.addNewWarehouseFromSettings = async function() {
     input.value = '';
     showToast(`Skladišče "${name}" dodano.`);
     await renderSettingsWarehouses();
+    await populateWarehouseSelectors();
   } catch (err) {
     console.error(err);
     showToast('Napaka pri dodajanju skladišča.');
@@ -7347,6 +7664,7 @@ window.deleteWarehouseFromSettings = async function(id) {
     await DB.deleteWarehouse(id);
     showToast('Skladišče odstranjeno.');
     await renderSettingsWarehouses();
+    await populateWarehouseSelectors();
   } catch (err) {
     console.error(err);
     showToast('Napaka pri brisanju skladišča.');
