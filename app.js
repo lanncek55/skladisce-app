@@ -2970,10 +2970,40 @@ function applySharpenFilterToCanvas(canvas, strength = 1.35) {
  * Analiza sličice z Google ML Kit (več-stopenjski sistem: raw -> auto-sharpen -> center-crop fallback)
  */
 async function parseFrameWithOcr(canvas) {
-  // 1. Primarno: Nativni Google ML Kit (Android aplikacija)
+  // 1. Primarno: Nativni Google ML Kit s prostorskim ločevanjem škatel (Android aplikacija)
+  if (window.Capacitor?.Plugins?.MLKitDirect?.recognizeOptimized) {
+    try {
+      const base64 = canvas.toDataURL('image/jpeg', 0.75);
+      const res = await window.Capacitor.Plugins.MLKitDirect.recognizeOptimized({ 
+        base64,
+        maxDim: 1280
+      });
+      if (res && res.success && (res.sku || res.barcode)) {
+        const bestSku = res.sku || res.barcode;
+        return {
+          articleNumber: bestSku,
+          primarySku: res.primarySku || '',
+          secondarySku: res.secondarySku || '',
+          barcode: res.barcode || '',
+          boxCurrent: res.boxCurrent || 1,
+          boxTotal: res.boxTotal || 1,
+          boxRect: res.boxRect || null,
+          otherBoxes: res.otherBoxes || [],
+          mode: res.mode,
+          name: res.name || '',
+          score: 95
+        };
+      }
+      return null;
+    } catch (e) {
+      console.warn('MLKitDirect.recognizeOptimized napaka:', e);
+    }
+  }
+
+  // Fallback: recognizeBase64
   if (window.Capacitor?.Plugins?.MLKitDirect) {
     try {
-      const base64 = canvas.toDataURL('image/jpeg', 0.85);
+      const base64 = canvas.toDataURL('image/jpeg', 0.80);
       const res = await window.Capacitor.Plugins.MLKitDirect.recognizeBase64({ 
         base64,
         includeBlocks: true
@@ -3016,37 +3046,47 @@ async function parseFrameWithOcr(canvas) {
   return null;
 }
 
+let scanBufferCanvas = null;
+let scanBufferCtx = null;
+
 /**
- * Analiza sličice v realnem času z 3-Frame Burst konsenz točkovanjem in QR detekcijo regala
+ * Analiza sličice v realnem času z nativnim ML Kit prostorskim ločevanjem škatel
  */
 async function processAutoScanFrame(video) {
   if (isProcessingFrame) return;
   isProcessingFrame = true;
 
-  let parsed = null;
-  window.parsed = null;
-
   const liveBadge = document.getElementById('scanLiveIndicator');
 
   try {
-    // 1. Dvostopenjski zajem: nizkoresolucijska detekcija lokacije teksta + 1:1 polnoresolucijski izrez
-    const cropResult = await getHierarchicalTextCrop(video);
-    const frameCanvas = cropResult.canvas;
-    const hasContent = cropResult.hasContent;
-    const frameSharpness = cropResult.sharpness || 5.0;
-
-    // Če ni dovolj kontrasta (premikanje telefona, prazna tla ali lepenka brez črk), takoj preskoči!
-    if (!hasContent) {
+    const vw = video.videoWidth || 1280;
+    const vh = video.videoHeight || 720;
+    if (vw < 50 || vh < 50) {
       isProcessingFrame = false;
       return;
     }
+
+    const maxDim = 960;
+    const scale = Math.min(1.0, maxDim / Math.max(vw, vh));
+    const w = Math.round(vw * scale);
+    const h = Math.round(vh * scale);
+
+    if (!scanBufferCanvas) {
+      scanBufferCanvas = document.createElement('canvas');
+      scanBufferCtx = scanBufferCanvas.getContext('2d', { willReadFrequently: true });
+    }
+    if (scanBufferCanvas.width !== w || scanBufferCanvas.height !== h) {
+      scanBufferCanvas.width = w;
+      scanBufferCanvas.height = h;
+    }
+    scanBufferCtx.drawImage(video, 0, 0, w, h);
 
     if (liveBadge) liveBadge.classList.add('analyzing');
 
     // 0. Preverjanje QR kode regala (če je usmerjeno v polico/regal)
     if (barcodeDetector) {
       try {
-        const barcodes = await barcodeDetector.detect(frameCanvas);
+        const barcodes = await barcodeDetector.detect(scanBufferCanvas);
         if (barcodes && barcodes.length > 0) {
           for (const b of barcodes) {
             const raw = b.rawValue || '';
@@ -3060,117 +3100,44 @@ async function processAutoScanFrame(video) {
       } catch (e) {}
     }
 
-    // 2. Takojšnja analiza sličice z Google ML Kit (brez počasnih rotacij)
-    let frameResult = await parseFrameWithOcr(frameCanvas);
+    // 1. Neposredna analiza s hitrim nativnim ML Kit
+    let frameResult = await parseFrameWithOcr(scanBufferCanvas);
     if (!frameResult || !frameResult.articleNumber) {
+      hideLiveTextTracker();
       isProcessingFrame = false;
       return;
     }
 
-    // 3. Preverjanje zanesljivosti in semantični cross-check:
-    // A) Artikel v lokalni bazi
-    const knownItem = (Array.isArray(cachedItems) ? cachedItems : []).find(it => it && String(it.sku).trim() === frameResult.articleNumber);
-    let semanticMatch = false;
-
-    // B) Semantično ujemanje naziva: preveri ali OCR ime vsebuje ključne besede naziva iz baze
-    if (knownItem && frameResult.name && !frameResult.name.startsWith('Artikel ')) {
-      const dbWords = (knownItem.name || '').toLowerCase().split(/[\s,.\-\/]+/);
-      const ocrWords = frameResult.name.toLowerCase().split(/[\s,.\-\/]+/);
-      for (const w of ocrWords) {
-        if (w.length >= 4 && dbWords.includes(w)) {
-          semanticMatch = true;
-          break;
-        }
-      }
+    // 2. Posodobi natančni HUD okvirček točno na zaznan tekstovni grozd škatle!
+    if (frameResult.boxRect) {
+      const br = frameResult.boxRect;
+      const padW = br.normWidth * 0.08;
+      const padH = br.normHeight * 0.12;
+      const labelText = `${frameResult.articleNumber} (Box ${frameResult.boxCurrent || 1}/${frameResult.boxTotal || 1})`;
+      updateLiveTextTracker(
+        Math.max(0, br.normCenterX - br.normWidth / 2 - padW),
+        Math.max(0, br.normCenterY - br.normHeight / 2 - padH),
+        br.normWidth + padW * 2,
+        br.normHeight + padH * 2,
+        labelText
+      );
     }
 
-    // C) Matematična EAN Modulo-10 kontrolna vsota
-    let validBarcode = false;
-    if (frameResult.barcode) {
-      validBarcode = WarehouseLabelParser.isValidEanChecksum?.(frameResult.barcode);
-    }
+    const now = performance.now();
+    const currentBoxKey = `${frameResult.articleNumber}_b${frameResult.boxCurrent || 1}`;
 
-    // D) Preverjanje nevarnosti zamenjave barvnih/dimenzijskih variant v bazi (1-mestna razlika v SKU)
-    let hasCloseVariantInDB = false;
-    if (Array.isArray(cachedItems)) {
-      for (const it of cachedItems) {
-        const otherSku = String(it.sku || '').trim();
-        if (otherSku && otherSku !== frameResult.articleNumber && otherSku.length === frameResult.articleNumber.length) {
-          let diffs = 0;
-          for (let k = 0; k < otherSku.length; k++) {
-            if (otherSku[k] !== frameResult.articleNumber[k]) diffs++;
-          }
-          if (diffs === 1) {
-            hasCloseVariantInDB = true;
-            break;
-          }
-        }
-      }
-    }
-
-    // Pogoji za takojšnjo potrditev (brez potrebe po drugem kadru):
-    // - Semantično potrjen naziv z bazo ALI veljavna matematična EAN črtna koda
-    // - Zadostna optična ostrina (>= 4.2)
-    // - Ni nevarnosti 1-mestne barvne zamenjave v skladišču
-    const isRockSolid = (semanticMatch || validBarcode) && frameSharpness >= 4.2 && !hasCloseVariantInDB;
-    let confirmed = isRockSolid;
-
-    // Če ni 100% nesporno, izvedemo hitri 2-kaderni konsenz (temporal burst consensus):
-    if (!confirmed) {
-      if (lastCandidateSKU === frameResult.articleNumber && lastCandidateBox === (frameResult.boxCurrent || 1)) {
-        confirmed = true;
-      } else {
-        lastCandidateSKU = frameResult.articleNumber;
-        lastCandidateBox = frameResult.boxCurrent || 1;
-        await new Promise(r => setTimeout(r, 35));
-        if (!isScanLoopRunning) {
-          isProcessingFrame = false;
-          return;
-        }
-        const nextCrop = await getHierarchicalTextCrop(video);
-        if (nextCrop && nextCrop.canvas && nextCrop.hasContent) {
-          const nextRes = await parseFrameWithOcr(nextCrop.canvas);
-          if (nextRes && nextRes.articleNumber === frameResult.articleNumber && (nextRes.boxCurrent || 1) === (frameResult.boxCurrent || 1)) {
-            confirmed = true;
-            if ((nextRes.score || 0) + (nextCrop.sharpness || 0) * 2 > (frameResult.score || 0) + frameSharpness * 2) {
-              frameResult = nextRes;
-            }
-          }
-        }
-      }
-    }
-
-    if (!confirmed) {
+    if (currentBoxKey === lastDetectedBoxKey && (now - lastDetectedTime) < 1200) {
       isProcessingFrame = false;
       return;
     }
 
-    parsed = frameResult;
+    lastDetectedBoxKey = currentBoxKey;
+    lastDetectedSKU = frameResult.articleNumber;
+    lastDetectedTime = now;
 
-    // 4. Če je artikel potrjen, sproži prepoznavo!
-    if (parsed && parsed.articleNumber) {
-      const now = performance.now();
-      const currentBoxKey = `${parsed.articleNumber}_b${parsed.boxCurrent || 1}`;
-      // Če gre za natanko isto škatlo (isti SKU in isti box), počakaj kratek premor 1.2s.
-      // Če pa gre za DRUGI BOX istega artikla (npr. škatla 2/2 po škatli 1/2) ali nov artikel, se sproži TAKOJ brez čakanja!
-      if (currentBoxKey === lastDetectedBoxKey && (now - lastDetectedTime) < 1200) {
-        isProcessingFrame = false;
-        return;
-      }
-
-      lastDetectedBoxKey = currentBoxKey;
-      lastDetectedSKU = parsed.articleNumber;
-      lastDetectedTime = now;
-      lastCandidateSKU = null;
-      lastCandidateBox = null;
-
-      // Zvočni in haptični signal
-      playSuccessBeep();
-      triggerDetectionFlash();
-
-      // Prikaz kartice za potrditev
-      await handleBoxScanResult(parsed);
-    }
+    playSuccessBeep();
+    triggerDetectionFlash();
+    await handleBoxScanResult(frameResult);
 
   } catch (err) {
     console.debug('Napaka pri analizi sličice:', err);
@@ -3281,7 +3248,7 @@ window.triggerHighResSensorCapture = async function() {
   const overlay = document.getElementById('ocrLoadingOverlay');
   const loadingText = document.getElementById('ocrLoadingText');
   if (overlay) overlay.style.display = 'flex';
-  if (loadingText) loadingText.textContent = 'Ultra-HD zajem (12.6 MP Leica)...';
+  if (loadingText) loadingText.textContent = 'Ultra-HD zajem (AI analiza)...';
 
   try {
     const video = document.getElementById('cameraVideo');
@@ -3292,26 +3259,41 @@ window.triggerHighResSensorCapture = async function() {
     }
 
     const track = cameraStream.getVideoTracks()[0];
-    if (window.ImageCapture && track) {
-      const ic = new ImageCapture(track);
-      // Posnemi neposredno s senzorja z maksimalno ločljivostjo 4096x3072
-      const blob = await ic.takePhoto({ imageWidth: 4096, imageHeight: 3072 });
-      const imgBitmap = await createImageBitmap(blob);
+    let canvas = document.createElement('canvas');
 
-      // Hierarhični izrez: najdi lokacijo teksta na nizki ločljivosti in izreži iz polne 4K ločljivosti
-      const { canvas } = await getHierarchicalTextCrop(imgBitmap);
-      await processImageWithOCR(canvas);
-      return;
+    if (window.ImageCapture && track) {
+      try {
+        const ic = new ImageCapture(track);
+        const blob = await ic.takePhoto({ imageWidth: 2560, imageHeight: 1920 });
+        const imgBitmap = await createImageBitmap(blob);
+        const scale = Math.min(1.0, 1600 / imgBitmap.width);
+        canvas.width = Math.round(imgBitmap.width * scale);
+        canvas.height = Math.round(imgBitmap.height * scale);
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(imgBitmap, 0, 0, canvas.width, canvas.height);
+      } catch (icErr) {
+        const vw = video.videoWidth || 1280;
+        const vh = video.videoHeight || 720;
+        const scale = Math.min(1.0, 1280 / vw);
+        canvas.width = Math.round(vw * scale);
+        canvas.height = Math.round(vh * scale);
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      }
+    } else {
+      const vw = video.videoWidth || 1280;
+      const vh = video.videoHeight || 720;
+      const scale = Math.min(1.0, 1280 / vw);
+      canvas.width = Math.round(vw * scale);
+      canvas.height = Math.round(vh * scale);
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     }
 
-    // Fallback: zajem okvirja iz videa z naravno ločljivostjo
-    const { canvas } = await getHierarchicalTextCrop(video);
     await processImageWithOCR(canvas);
   } catch (err) {
-    console.warn('ImageCapture napaka, fallback na video:', err);
-    const video = document.getElementById('cameraVideo');
-    const { canvas } = await getHierarchicalTextCrop(video);
-    await processImageWithOCR(canvas);
+    console.warn('ImageCapture napaka:', err);
+    showToast('Napaka pri zajemu: ' + (err.message || err));
   } finally {
     if (overlay) overlay.style.display = 'none';
   }
@@ -3489,16 +3471,50 @@ async function getHierarchicalTextCrop(source) {
 /**
  * Posodobi vizualni HUD okvirček na zaslonu, ki v živo sledi besedilu
  */
-function updateLiveTextTracker(normLeft, normTop, normWidth, normHeight) {
+function updateLiveTextTracker(normLeft, normTop, normWidth, normHeight, label) {
   try {
     const tracker = document.getElementById('mlLiveTextTracker');
-    if (!tracker) return;
-    tracker.style.display = 'block';
-    tracker.style.left = Math.max(2, Math.min(95, normLeft * 100)).toFixed(1) + '%';
-    tracker.style.top = Math.max(2, Math.min(95, normTop * 100)).toFixed(1) + '%';
-    tracker.style.width = Math.max(8, Math.min(96, normWidth * 100)).toFixed(1) + '%';
-    tracker.style.height = Math.max(6, Math.min(96, normHeight * 100)).toFixed(1) + '%';
-    tracker.style.opacity = '1';
+    const badge = document.getElementById('mlTrackerBadge');
+    const video = document.getElementById('cameraVideo');
+    const container = document.querySelector('.camera-preview-container');
+    if (!tracker || !container) return;
+
+    if (badge && label) {
+      badge.textContent = `⚡ ${label}`;
+    }
+
+    const cW = container.clientWidth;
+    const cH = container.clientHeight;
+    const vW = video ? (video.videoWidth || cW) : cW;
+    const vH = video ? (video.videoHeight || cH) : cH;
+
+    if (vW > 0 && vH > 0 && cW > 0 && cH > 0) {
+      // Izračun točnega položaja z upoštevanjem CSS 'object-fit: cover'
+      const scale = Math.max(cW / vW, cH / vH);
+      const renderW = vW * scale;
+      const renderH = vH * scale;
+      const offX = (cW - renderW) / 2;
+      const offY = (cH - renderH) / 2;
+
+      const screenLeft = Math.max(2, Math.min(cW - 24, offX + normLeft * renderW));
+      const screenTop = Math.max(2, Math.min(cH - 24, offY + normTop * renderH));
+      const screenWidth = Math.max(24, Math.min(cW - screenLeft, normWidth * renderW));
+      const screenHeight = Math.max(20, Math.min(cH - screenTop, normHeight * renderH));
+
+      tracker.style.display = 'block';
+      tracker.style.left = `${Math.round(screenLeft)}px`;
+      tracker.style.top = `${Math.round(screenTop)}px`;
+      tracker.style.width = `${Math.round(screenWidth)}px`;
+      tracker.style.height = `${Math.round(screenHeight)}px`;
+      tracker.style.opacity = '1';
+    } else {
+      tracker.style.display = 'block';
+      tracker.style.left = Math.max(2, Math.min(95, normLeft * 100)).toFixed(1) + '%';
+      tracker.style.top = Math.max(2, Math.min(95, normTop * 100)).toFixed(1) + '%';
+      tracker.style.width = Math.max(8, Math.min(96, normWidth * 100)).toFixed(1) + '%';
+      tracker.style.height = Math.max(6, Math.min(96, normHeight * 100)).toFixed(1) + '%';
+      tracker.style.opacity = '1';
+    }
   } catch (e) {}
 }
 
@@ -4287,7 +4303,7 @@ function renderBoxResultCard(existingItem) {
   if (!parsed) return;
 
   const sku = parsed.articleNumber || 'Ni zaznana';
-  const name = (existingItem && existingItem.name) ? existingItem.name : (parsed.name || 'Neznan artikel');
+  const name = (existingItem && existingItem.name) ? existingItem.name : (parsed.name || `Artikel ${sku}`);
   const boxNum = parsed.boxCurrent || 1;
   const boxTotal = Math.max(1, parsed.boxTotal || (existingItem ? existingItem.boxTotal : 1));
   const boxInfo = `Box ${boxNum}/${boxTotal}`;

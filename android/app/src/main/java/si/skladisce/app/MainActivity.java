@@ -228,8 +228,16 @@ public class MainActivity extends BridgeActivity {
         public String primarySku = null;
         public String secondarySku = null;
         public String barcode = null;
+        public String name = "";
         public int boxCurrent = 1;
         public int boxTotal = 1;
+        public android.graphics.Rect boundingBox = null;
+        public float score = 0f;
+        public float normCenterX = 0.5f;
+        public float normCenterY = 0.5f;
+        public float normWidth = 0f;
+        public float normHeight = 0f;
+        public java.util.List<WarehouseScanResult> otherBoxes = new java.util.ArrayList<>();
     }
 
     public static class WarehouseLabelHelper {
@@ -278,6 +286,207 @@ public class MainActivity extends BridgeActivity {
             } catch (Exception e) {
                 return false;
             }
+        }
+
+        public static boolean isTechnicalOrBoxLine(String line) {
+            if (line == null || line.trim().isEmpty()) return true;
+            String lower = line.toLowerCase().trim();
+            if (lower.matches("^[0-9\\s.,\\-/:xX+*#%~_()]+$")) return true;
+            if (lower.matches(".*(?:gross|net|brutto|netto)?\\s*(?:weight|teza|teža)?\\s*[:.]?\\s*\\d+(?:[.,]\\d+)?\\s*(?:kg|lbs|g)\\b.*") && !lower.matches(".*(?:desk|chair|table|miza|stol|omara|bed|postelja|astrup|marstrand).*")) return true;
+            if (lower.matches("^(?:[wlhø]\\s*\\d+\\s*[x*]\\s*)+.*(?:cm|mm|inch)?$")) return true;
+            if (lower.matches(".*(?:box|colli|del|part|[sš]katla)\\s*\\d+.*")) return true;
+            if (lower.matches("^\\s*\\d+\\s*[/\\\\]\\s*\\d+\\s*$")) return true;
+            if (lower.matches(".*(?:barcode|ean|order|batch|po\\s*no|supplier|made in|jysk nordic).*")) return true;
+            if (lower.matches(".*(?:qty|quantity|kolicina|količina)\\s*[:.]?\\s*\\d+.*")) return true;
+            return false;
+        }
+
+        public static String cleanProductName(String s) {
+            if (s == null) return "";
+            return s.replaceAll("^(?i)(?:product\\s*(?:name|text|desc)?|article(?:\\s*name)?|item(?:\\s*name)?|naziv|opis)[\\s.:\\-]+", "")
+                    .replaceAll("^[\\s\\-–—:/]+", "")
+                    .replaceAll("[\\s\\-–—:/]+$", "")
+                    .trim();
+        }
+
+        public static String extractProductName(String[] lines, String sku, int skuLineIdx) {
+            if (lines == null || lines.length == 0) return "";
+
+            // A) V isti vrstici kot SKU z ločilom (npr. "3650044 - Desk ASTRUP 60x120 black")
+            if (sku != null && !sku.isEmpty() && skuLineIdx >= 0 && skuLineIdx < lines.length) {
+                String line = lines[skuLineIdx];
+                String after = line.replaceFirst("(?i)^.*?\\b" + java.util.regex.Pattern.quote(sku) + "\\b[\\s\\-–—:/]*", "").trim();
+                after = cleanProductName(after);
+                if (after.length() >= 3 && after.matches(".*[a-zA-Z]{2,}.*") && !isTechnicalOrBoxLine(after)) {
+                    return after;
+                }
+            }
+
+            // B) Izrecna oznaka: "Product: Desk ASTRUP", "Article: ...", "Item: ..."
+            for (String l : lines) {
+                java.util.regex.Matcher m = java.util.regex.Pattern.compile("(?i)(?:product\\s*(?:name|text|desc)?|article(?:\\s*name)?|item(?:\\s*name)?|naziv|opis)[\\s.:]+(.+)").matcher(l);
+                if (m.find()) {
+                    String cand = cleanProductName(m.group(1));
+                    if (cand.length() >= 3 && cand.matches(".*[a-zA-Z]{2,}.*") && !isTechnicalOrBoxLine(cand)) {
+                        return cand;
+                    }
+                }
+            }
+
+            // C) Vrstica takoj za ali pred šifro
+            if (skuLineIdx >= 0) {
+                if (skuLineIdx + 1 < lines.length) {
+                    String next = cleanProductName(lines[skuLineIdx + 1]);
+                    if (next.length() >= 3 && next.matches(".*[a-zA-Z]{2,}.*") && !isTechnicalOrBoxLine(next)) {
+                        return next;
+                    }
+                }
+                if (skuLineIdx - 1 >= 0) {
+                    String prev = cleanProductName(lines[skuLineIdx - 1]);
+                    if (prev.length() >= 3 && prev.matches(".*[a-zA-Z]{2,}.*") && !isTechnicalOrBoxLine(prev)) {
+                        return prev;
+                    }
+                }
+            }
+
+            // D) Iskanje po ključnih besedah artiklov
+            java.util.regex.Pattern kwPattern = java.util.regex.Pattern.compile("(?i)\\b(?:desk|chair|table|miza|stol|omara|wardrobe|bed|postelja|shelf|regal|polica|cabinet|drawer|predalnik|komoda|mirror|ogledalo|sofa|couch|bench|cushion|pillow|rug|carpet|blazina|vzmetnica|mat|frame|insert|astrup|marstrand|lindholm|halsted|limfjorden|tamholt|tamdrup|abildaa|billum|alsted|bredstrup|kastrup|tange|jenslev|tapdrup|korup|viuf|malling|stauning|billund|englerup|agerby|lyngs|barkholt|hvilsted)\\b");
+            for (String l : lines) {
+                if (kwPattern.matcher(l).find() && !isTechnicalOrBoxLine(l)) {
+                    String cand = cleanProductName(l);
+                    if (cand.length() >= 3) return cand;
+                }
+            }
+
+            // E) Katerakoli veljavna opisna vrstica z vsaj 2 besedama
+            for (String l : lines) {
+                if (!isTechnicalOrBoxLine(l)) {
+                    String cand = cleanProductName(l);
+                    if (cand.length() >= 4 && cand.matches(".*[a-zA-Z]{2,}.*") && cand.contains(" ")) {
+                        return cand;
+                    }
+                }
+            }
+
+            return "";
+        }
+
+        public static java.util.List<WarehouseScanResult> analyzeBoxClusters(java.util.List<com.google.mlkit.vision.text.Text.TextBlock> blocks, int imgW, int imgH) {
+            java.util.List<WarehouseScanResult> results = new java.util.ArrayList<>();
+            if (blocks == null || blocks.isEmpty()) return results;
+
+            // 1. Filtriraj veljavne tekstovne bloke
+            java.util.List<com.google.mlkit.vision.text.Text.TextBlock> validBlocks = new java.util.ArrayList<>();
+            for (com.google.mlkit.vision.text.Text.TextBlock b : blocks) {
+                if (b != null && b.getText() != null && b.getText().trim().length() > 0 && b.getBoundingBox() != null) {
+                    validBlocks.add(b);
+                }
+            }
+            if (validBlocks.isEmpty()) return results;
+
+            // 2. Prostorsko razvrščanje (Spatial Clustering z grafom soseščine)
+            // Dve različni škatli sta prostorsko ločeni; bloki iste škatle so skupaj
+            float maxClusterDist = Math.max(140f, imgW * 0.16f);
+            int n = validBlocks.size();
+            boolean[] visited = new boolean[n];
+            java.util.List<java.util.List<com.google.mlkit.vision.text.Text.TextBlock>> clusters = new java.util.ArrayList<>();
+
+            for (int i = 0; i < n; i++) {
+                if (visited[i]) continue;
+                visited[i] = true;
+                java.util.List<com.google.mlkit.vision.text.Text.TextBlock> cluster = new java.util.ArrayList<>();
+                java.util.Queue<Integer> queue = new java.util.LinkedList<>();
+                cluster.add(validBlocks.get(i));
+                queue.add(i);
+
+                while (!queue.isEmpty()) {
+                    int currIdx = queue.poll();
+                    android.graphics.Rect r1 = validBlocks.get(currIdx).getBoundingBox();
+
+                    for (int j = 0; j < n; j++) {
+                        if (!visited[j]) {
+                            android.graphics.Rect r2 = validBlocks.get(j).getBoundingBox();
+                            int dx = Math.max(0, Math.max(r1.left, r2.left) - Math.min(r1.right, r2.right));
+                            int dy = Math.max(0, Math.max(r1.top, r2.top) - Math.min(r1.bottom, r2.bottom));
+                            double dist = Math.hypot(dx, dy);
+
+                            if (dist <= maxClusterDist) {
+                                visited[j] = true;
+                                cluster.add(validBlocks.get(j));
+                                queue.add(j);
+                            }
+                        }
+                    }
+                }
+                clusters.add(cluster);
+            }
+
+            // 3. Evalvacija vsakega grozda (škatle) posebej
+            float screenCenterX = imgW / 2.0f;
+            float screenCenterY = imgH / 2.0f;
+            float maxScreenDist = (float) Math.hypot(screenCenterX, screenCenterY);
+
+            for (java.util.List<com.google.mlkit.vision.text.Text.TextBlock> cluster : clusters) {
+                java.util.Collections.sort(cluster, (a, b) -> Integer.compare(a.getBoundingBox().top, b.getBoundingBox().top));
+
+                StringBuilder sb = new StringBuilder();
+                int minX = Integer.MAX_VALUE, minY = Integer.MAX_VALUE;
+                int maxX = Integer.MIN_VALUE, maxY = Integer.MIN_VALUE;
+
+                for (com.google.mlkit.vision.text.Text.TextBlock b : cluster) {
+                    sb.append(b.getText()).append("\n");
+                    android.graphics.Rect r = b.getBoundingBox();
+                    if (r.left < minX) minX = r.left;
+                    if (r.top < minY) minY = r.top;
+                    if (r.right > maxX) maxX = r.right;
+                    if (r.bottom > maxY) maxY = r.bottom;
+                }
+
+                String clusterText = sb.toString();
+                WarehouseScanResult scan = parseWarehouseText(clusterText);
+
+                if (scan != null && (scan.primarySku != null || scan.secondarySku != null || scan.barcode != null)) {
+                    android.graphics.Rect clusterBox = new android.graphics.Rect(minX, minY, maxX, maxY);
+                    scan.boundingBox = clusterBox;
+                    scan.normCenterX = clusterBox.centerX() / (float) imgW;
+                    scan.normCenterY = clusterBox.centerY() / (float) imgH;
+                    scan.normWidth = clusterBox.width() / (float) imgW;
+                    scan.normHeight = clusterBox.height() / (float) imgH;
+
+                    float score = 0f;
+                    if (scan.primarySku != null) score += 100f;
+                    if (scan.secondarySku != null) score += 50f;
+                    if (scan.barcode != null) score += 40f;
+                    if (scan.boxTotal > 1) score += 20f;
+
+                    // Sredinska prioriteta: Škatla, ki jo delavec usmeri v središče kamere, dobi prednost!
+                    float distToCenter = (float) Math.hypot(clusterBox.centerX() - screenCenterX, clusterBox.centerY() - screenCenterY);
+                    float normDist = distToCenter / maxScreenDist;
+                    score += Math.max(0f, (1.0f - normDist) * 60f);
+
+                    scan.score = score;
+                    results.add(scan);
+                }
+            }
+
+            // Uredi kandidate po oceni padajoče (najvišja ocena = najboljša / sredinska škatla prva!)
+            java.util.Collections.sort(results, (a, b) -> Float.compare(b.score, a.score));
+
+            return results;
+        }
+
+        public static WarehouseScanResult findBestBoxCandidate(java.util.List<com.google.mlkit.vision.text.Text.TextBlock> blocks, int imgW, int imgH, String fullText) {
+            java.util.List<WarehouseScanResult> candidates = analyzeBoxClusters(blocks, imgW, imgH);
+            if (!candidates.isEmpty()) {
+                WarehouseScanResult best = candidates.get(0);
+                if (candidates.size() > 1) {
+                    for (int i = 1; i < candidates.size(); i++) {
+                        best.otherBoxes.add(candidates.get(i));
+                    }
+                }
+                return best;
+            }
+            return parseWarehouseText(fullText);
         }
 
         public static android.graphics.Rect computeSmartClusterCrop(java.util.List<com.google.mlkit.vision.text.Text.TextBlock> blocks, int imgW, int imgH) {
@@ -374,8 +583,9 @@ public class MainActivity extends BridgeActivity {
             WarehouseScanResult r = new WarehouseScanResult();
             String[] lines = text.split("\\r?\\n");
 
-            // 1. Podatki o škatli (Box 1/2, 1/1, 2/2, 1/4)
+            // 1. Podatki o škatli (Box 1/2, 1/1, 2/2, 1/4 ali "45514002 1/2")
             java.util.regex.Pattern boxP = java.util.regex.Pattern.compile("(?:box|colli|del|part|[sš]katla)\\s*([0-9]{1,2})\\s*[/|\\\\]\\s*([0-9]{1,2})", java.util.regex.Pattern.CASE_INSENSITIVE);
+            java.util.regex.Pattern fracP = java.util.regex.Pattern.compile("\\b([1-9])\\s*[/|\\\\]\\s*([1-9])\\b");
             for (String l : lines) {
                 java.util.regex.Matcher bm = boxP.matcher(l);
                 if (bm.find()) {
@@ -390,16 +600,35 @@ public class MainActivity extends BridgeActivity {
                     } catch (Exception ignored) {}
                 }
             }
+            if (r.boxTotal == 1) {
+                for (String l : lines) {
+                    java.util.regex.Matcher fm = fracP.matcher(l);
+                    if (fm.find()) {
+                        try {
+                            int c = Integer.parseInt(fm.group(1));
+                            int t = Integer.parseInt(fm.group(2));
+                            if (c <= t && t >= 2 && t <= 6) {
+                                r.boxCurrent = c;
+                                r.boxTotal = t;
+                                break;
+                            }
+                        } catch (Exception ignored) {}
+                    }
+                }
+            }
+
+            int skuLineIdx = -1;
 
             // 2. Dvojna šifra: "3601257 / 78480001", "3670214/81006001", "Product no/3772020/56379001"
             java.util.regex.Pattern dualP = java.util.regex.Pattern.compile("(?:product\\s*no[\\/.:\\s]*)?([0-9OTIl]{7})\\s*[/|\\\\I]\\s*([0-9OTIl]{8})", java.util.regex.Pattern.CASE_INSENSITIVE);
             java.util.regex.Pattern fusedP = java.util.regex.Pattern.compile("\\b([3-6][0-9]{6})([5-9][0-9]{5}001|[5-9][0-9]{7})\\b");
-            for (String l : lines) {
+            for (int i = 0; i < lines.length; i++) {
+                String l = lines[i];
                 java.util.regex.Matcher dm = dualP.matcher(l);
                 if (dm.find()) {
                     String p = sanitizeDigits(dm.group(1));
                     String s = sanitizeDigits(dm.group(2));
-                    if (isPrimaryValid(p)) r.primarySku = p;
+                    if (isPrimaryValid(p)) { r.primarySku = p; skuLineIdx = i; }
                     if (isSecondaryValid(s)) r.secondarySku = s;
                     if (r.primarySku != null || r.secondarySku != null) break;
                 }
@@ -407,7 +636,7 @@ public class MainActivity extends BridgeActivity {
                 if (fm.find()) {
                     String p = fm.group(1);
                     String s = fm.group(2);
-                    if (isPrimaryValid(p)) r.primarySku = p;
+                    if (isPrimaryValid(p)) { r.primarySku = p; skuLineIdx = i; }
                     if (isSecondaryValid(s)) r.secondarySku = s;
                     break;
                 }
@@ -422,6 +651,7 @@ public class MainActivity extends BridgeActivity {
                         String c = sanitizeDigits(em.group(1));
                         if (isPrimaryValid(c)) {
                             r.primarySku = c;
+                            skuLineIdx = i;
                             break;
                         }
                     }
@@ -431,6 +661,7 @@ public class MainActivity extends BridgeActivity {
                             String c = sanitizeDigits(nm.group(1));
                             if (isPrimaryValid(c)) {
                                 r.primarySku = c;
+                                skuLineIdx = i + 1;
                                 break;
                             }
                         }
@@ -442,13 +673,15 @@ public class MainActivity extends BridgeActivity {
             if (r.primarySku == null) {
                 java.util.regex.Pattern dashP = java.util.regex.Pattern.compile("\\b([0-9OTIl]{7})\\s*[-–—]\\s*[a-zA-Z]");
                 java.util.regex.Pattern dash6P = java.util.regex.Pattern.compile("\\b([1-6][0-9]{5})\\s*[-–—]");
-                for (String l : lines) {
+                for (int i = 0; i < lines.length; i++) {
+                    String l = lines[i];
                     java.util.regex.Matcher dm = dashP.matcher(l);
                     if (dm.find()) {
                         String c = sanitizeDigits(dm.group(1));
                         if (c.startsWith("38")) c = "36" + c.substring(2);
                         if (isPrimaryValid(c)) {
                             r.primarySku = c;
+                            skuLineIdx = i;
                             break;
                         }
                     }
@@ -457,6 +690,7 @@ public class MainActivity extends BridgeActivity {
                         String cand7 = "3" + dm6.group(1);
                         if (isPrimaryValid(cand7)) {
                             r.primarySku = cand7;
+                            skuLineIdx = i;
                             break;
                         }
                     }
@@ -466,13 +700,15 @@ public class MainActivity extends BridgeActivity {
             // 5. 8-mestna dobaviteljeva koda
             if (r.secondarySku == null) {
                 java.util.regex.Pattern secP = java.util.regex.Pattern.compile("\\b([5-9][0-9]{5}001|[5-9][0-9]{7})\\b");
-                for (String l : lines) {
+                for (int i = 0; i < lines.length; i++) {
+                    String l = lines[i];
                     if (l.toLowerCase().matches(".*(?:tel|phone|fax|order|batch|date).*")) continue;
                     java.util.regex.Matcher sm = secP.matcher(l);
                     if (sm.find()) {
                         String c = sm.group(1);
                         if (isSecondaryValid(c)) {
                             r.secondarySku = c;
+                            if (skuLineIdx < 0) skuLineIdx = i;
                             break;
                         }
                     }
@@ -482,12 +718,14 @@ public class MainActivity extends BridgeActivity {
             // 6. Splošna 7-mestna JYSK šifra
             if (r.primarySku == null) {
                 java.util.regex.Pattern anyP = java.util.regex.Pattern.compile("\\b([346][0-9]{6})\\b");
-                for (String l : lines) {
+                for (int i = 0; i < lines.length; i++) {
+                    String l = lines[i];
                     if (l.toLowerCase().matches(".*(?:order|batch|po|tel|phone|weight|gross|ean|barcode).*")) continue;
                     java.util.regex.Matcher am = anyP.matcher(l);
                     if (am.find()) {
                         if (isPrimaryValid(am.group(1))) {
                             r.primarySku = am.group(1);
+                            skuLineIdx = i;
                             break;
                         }
                     }
@@ -504,6 +742,10 @@ public class MainActivity extends BridgeActivity {
             }
 
             if (r.primarySku == null && r.secondarySku == null && r.barcode == null) return null;
+
+            // 8. Razpoznava naziva artikla neposredno s škatle (tudi če artikel ni v nobenem šifrantu)
+            r.name = extractProductName(lines, r.primarySku != null ? r.primarySku : r.secondarySku, skuLineIdx);
+
             return r;
         }
     }
@@ -526,6 +768,178 @@ public class MainActivity extends BridgeActivity {
                 recognizerInstance = null;
             }
             super.handleOnDestroy();
+        }
+
+        private static final java.util.Map<String, Bitmap> ramBitmaps = new java.util.concurrent.ConcurrentHashMap<>();
+
+        @PluginMethod
+        public void preloadImagesToRam(PluginCall call) {
+            String dirPath = call.getString("dir", "/sdcard/Download/warehouse_test_photos");
+            File dir = new File(dirPath);
+            if (!dir.exists() || !dir.isDirectory()) {
+                call.reject("Direktorij ne obstaja: " + dirPath);
+                return;
+            }
+            File[] files = dir.listFiles((d, name) -> name.toLowerCase().endsWith(".jpg") || name.toLowerCase().endsWith(".jpeg") || name.toLowerCase().endsWith(".png"));
+            if (files == null || files.length == 0) {
+                call.reject("Ni slik v mapi: " + dirPath);
+                return;
+            }
+
+            int loaded = 0;
+            int targetDim = call.getInt("maxDim", 1280);
+
+            for (File f : files) {
+                try {
+                    int origW = 0, origH = 0;
+                    try (java.io.InputStream is1 = new java.io.BufferedInputStream(new java.io.FileInputStream(f), 32768)) {
+                        BitmapFactory.Options bOpts = new BitmapFactory.Options();
+                        bOpts.inJustDecodeBounds = true;
+                        BitmapFactory.decodeStream(is1, null, bOpts);
+                        origW = bOpts.outWidth;
+                        origH = bOpts.outHeight;
+                    }
+
+                    int sample = 1;
+                    int maxD = Math.max(origW, origH);
+                    while ((maxD / (sample * 2)) >= targetDim) {
+                        sample *= 2;
+                    }
+
+                    try (java.io.InputStream is2 = new java.io.BufferedInputStream(new java.io.FileInputStream(f), 65536)) {
+                        BitmapFactory.Options dOpts = new BitmapFactory.Options();
+                        dOpts.inSampleSize = sample;
+                        dOpts.inPreferredConfig = Bitmap.Config.RGB_565;
+                        Bitmap bmp = BitmapFactory.decodeStream(is2, null, dOpts);
+                        if (bmp != null) {
+                            ramBitmaps.put(f.getName(), bmp);
+                            loaded++;
+                        }
+                    }
+                } catch (Exception ignored) {}
+            }
+
+            JSObject ret = new JSObject();
+            ret.put("loadedCount", loaded);
+            ret.put("totalFiles", files.length);
+            call.resolve(ret);
+        }
+
+        @PluginMethod
+        public void recognizeFromRam(PluginCall call) {
+            final long startTime = System.currentTimeMillis();
+            String id = call.getString("id");
+            if (id == null || id.isEmpty()) {
+                call.reject("Manjka ID slike");
+                return;
+            }
+
+            Bitmap bitmap = ramBitmaps.get(id);
+            if (bitmap == null || bitmap.isRecycled()) {
+                call.reject("Slika ni naložena v RAM-u: " + id);
+                return;
+            }
+
+            final Bitmap baseBmp = bitmap;
+
+            // 1. Prehod: 0 stopinj z zaznavo ločenih škatel (spatial clustering)
+            InputImage img0 = InputImage.fromBitmap(baseBmp, 0);
+            getRecognizer().process(img0)
+                .addOnSuccessListener(res0 -> {
+                    String txt0 = (res0 != null) ? res0.getText() : "";
+                    WarehouseScanResult scan0 = WarehouseLabelHelper.findBestBoxCandidate(
+                        res0 != null ? res0.getTextBlocks() : null, baseBmp.getWidth(), baseBmp.getHeight(), txt0);
+
+                    if (scan0 != null && (scan0.primarySku != null || scan0.secondarySku != null || scan0.barcode != null)) {
+                        long totalMs = System.currentTimeMillis() - startTime;
+                        sendOptimizedResult(call, scan0, txt0, res0.getTextBlocks(), baseBmp.getWidth(), baseBmp.getHeight(), baseBmp.getWidth(), baseBmp.getHeight(), 0, totalMs, "ram_cluster_0");
+                        return;
+                    }
+
+                    // 2. Prehod: 180 stopinj (obratne škatle)
+                    try {
+                        InputImage img180 = InputImage.fromBitmap(baseBmp, 180);
+                        getRecognizer().process(img180)
+                            .addOnSuccessListener(res180 -> {
+                                String txt180 = (res180 != null) ? res180.getText() : "";
+                                WarehouseScanResult scan180 = WarehouseLabelHelper.findBestBoxCandidate(
+                                    res180 != null ? res180.getTextBlocks() : null, baseBmp.getWidth(), baseBmp.getHeight(), txt180);
+
+                                if (scan180 != null && (scan180.primarySku != null || scan180.secondarySku != null || scan180.barcode != null)) {
+                                    long totalMs = System.currentTimeMillis() - startTime;
+                                    sendOptimizedResult(call, scan180, txt180, res180.getTextBlocks(), baseBmp.getWidth(), baseBmp.getHeight(), baseBmp.getWidth(), baseBmp.getHeight(), 0, totalMs, "ram_cluster_180");
+                                    return;
+                                }
+
+                                // 3. Prehod: 90 stopinj (pokončne škatle na paletah / policah)
+                                try {
+                                    InputImage img90 = InputImage.fromBitmap(baseBmp, 90);
+                                    getRecognizer().process(img90)
+                                        .addOnSuccessListener(res90 -> {
+                                            String txt90 = (res90 != null) ? res90.getText() : "";
+                                            WarehouseScanResult scan90 = WarehouseLabelHelper.findBestBoxCandidate(
+                                                res90 != null ? res90.getTextBlocks() : null, baseBmp.getHeight(), baseBmp.getWidth(), txt90);
+
+                                            if (scan90 != null && (scan90.primarySku != null || scan90.secondarySku != null || scan90.barcode != null)) {
+                                                long totalMs = System.currentTimeMillis() - startTime;
+                                                sendOptimizedResult(call, scan90, txt90, res90.getTextBlocks(), baseBmp.getWidth(), baseBmp.getHeight(), baseBmp.getWidth(), baseBmp.getHeight(), 0, totalMs, "ram_cluster_90");
+                                                return;
+                                            }
+
+                                            // 4. Prehod: Nativni pametni izrez besedilnega grozda (Smart Cluster Crop)
+                                            java.util.List<com.google.mlkit.vision.text.Text.TextBlock> blocks = (res0 != null) ? res0.getTextBlocks() : null;
+                                            if (blocks != null && !blocks.isEmpty()) {
+                                                android.graphics.Rect cropBox = WarehouseLabelHelper.computeSmartClusterCrop(blocks, baseBmp.getWidth(), baseBmp.getHeight());
+                                                if (cropBox != null && cropBox.width() > 60 && cropBox.height() > 40) {
+                                                    Bitmap cropped = Bitmap.createBitmap(baseBmp, cropBox.left, cropBox.top, cropBox.width(), cropBox.height());
+                                                    InputImage imgCrop = InputImage.fromBitmap(cropped, 0);
+                                                    getRecognizer().process(imgCrop)
+                                                        .addOnSuccessListener(resCrop -> {
+                                                            String txtCrop = (resCrop != null) ? resCrop.getText() : "";
+                                                            WarehouseScanResult scanCrop = WarehouseLabelHelper.findBestBoxCandidate(
+                                                                resCrop != null ? resCrop.getTextBlocks() : null, cropped.getWidth(), cropped.getHeight(), txtCrop);
+                                                            long totalMs = System.currentTimeMillis() - startTime;
+
+                                                            if (scanCrop != null && (scanCrop.primarySku != null || scanCrop.secondarySku != null || scanCrop.barcode != null)) {
+                                                                sendOptimizedResult(call, scanCrop, txtCrop, resCrop.getTextBlocks(), cropped.getWidth(), cropped.getHeight(), baseBmp.getWidth(), baseBmp.getHeight(), 0, totalMs, "ram_cluster_crop");
+                                                            } else {
+                                                                sendOptimizedFallback(call, txt0, res0.getTextBlocks(), totalMs);
+                                                            }
+                                                            if (!cropped.isRecycled()) cropped.recycle();
+                                                        })
+                                                        .addOnFailureListener(e -> {
+                                                            long totalMs = System.currentTimeMillis() - startTime;
+                                                            sendOptimizedFallback(call, txt0, res0.getTextBlocks(), totalMs);
+                                                            if (!cropped.isRecycled()) cropped.recycle();
+                                                        });
+                                                    return;
+                                                }
+                                            }
+
+                                            long totalMs = System.currentTimeMillis() - startTime;
+                                            sendOptimizedFallback(call, txt0, res0 != null ? res0.getTextBlocks() : null, totalMs);
+                                        })
+                                        .addOnFailureListener(e90 -> {
+                                            long totalMs = System.currentTimeMillis() - startTime;
+                                            sendOptimizedFallback(call, txt0, res0 != null ? res0.getTextBlocks() : null, totalMs);
+                                        });
+                                } catch (Exception e90) {
+                                    long totalMs = System.currentTimeMillis() - startTime;
+                                    sendOptimizedFallback(call, txt0, res0 != null ? res0.getTextBlocks() : null, totalMs);
+                                }
+                            })
+                            .addOnFailureListener(e -> {
+                                long totalMs = System.currentTimeMillis() - startTime;
+                                sendOptimizedFallback(call, txt0, res0 != null ? res0.getTextBlocks() : null, totalMs);
+                            });
+                    } catch (Exception ex) {
+                        long totalMs = System.currentTimeMillis() - startTime;
+                        sendOptimizedFallback(call, txt0, res0 != null ? res0.getTextBlocks() : null, totalMs);
+                    }
+                })
+                .addOnFailureListener(e -> {
+                    call.reject(e.getMessage());
+                });
         }
 
         /**
@@ -608,16 +1022,17 @@ public class MainActivity extends BridgeActivity {
             final int finalOrigH = origH;
             final long decodeMs = System.currentTimeMillis() - startTime;
 
-            // 1. Prehod: 0 stopinj na celotni (skalirani) sliki
+            // 1. Prehod: 0 stopinj z zaznavo ločenih škatel (spatial clustering)
             InputImage img0 = InputImage.fromBitmap(baseBmp, 0);
             getRecognizer().process(img0)
                 .addOnSuccessListener(res0 -> {
                     String txt0 = (res0 != null) ? res0.getText() : "";
-                    WarehouseScanResult scan0 = WarehouseLabelHelper.parseWarehouseText(txt0);
+                    WarehouseScanResult scan0 = WarehouseLabelHelper.findBestBoxCandidate(
+                        res0 != null ? res0.getTextBlocks() : null, baseBmp.getWidth(), baseBmp.getHeight(), txt0);
 
                     if (scan0 != null && (scan0.primarySku != null || scan0.secondarySku != null || scan0.barcode != null)) {
                         long totalMs = System.currentTimeMillis() - startTime;
-                        sendOptimizedResult(call, scan0, txt0, res0.getTextBlocks(), baseBmp.getWidth(), baseBmp.getHeight(), finalOrigW, finalOrigH, decodeMs, totalMs, "native_0");
+                        sendOptimizedResult(call, scan0, txt0, res0.getTextBlocks(), baseBmp.getWidth(), baseBmp.getHeight(), finalOrigW, finalOrigH, decodeMs, totalMs, "native_cluster_0");
                         if (!baseBmp.isRecycled()) baseBmp.recycle();
                         return;
                     }
@@ -628,49 +1043,78 @@ public class MainActivity extends BridgeActivity {
                         getRecognizer().process(img180)
                             .addOnSuccessListener(res180 -> {
                                 String txt180 = (res180 != null) ? res180.getText() : "";
-                                WarehouseScanResult scan180 = WarehouseLabelHelper.parseWarehouseText(txt180);
+                                WarehouseScanResult scan180 = WarehouseLabelHelper.findBestBoxCandidate(
+                                    res180 != null ? res180.getTextBlocks() : null, baseBmp.getWidth(), baseBmp.getHeight(), txt180);
 
                                 if (scan180 != null && (scan180.primarySku != null || scan180.secondarySku != null || scan180.barcode != null)) {
                                     long totalMs = System.currentTimeMillis() - startTime;
-                                    sendOptimizedResult(call, scan180, txt180, res180.getTextBlocks(), baseBmp.getWidth(), baseBmp.getHeight(), finalOrigW, finalOrigH, decodeMs, totalMs, "native_180");
+                                    sendOptimizedResult(call, scan180, txt180, res180.getTextBlocks(), baseBmp.getWidth(), baseBmp.getHeight(), finalOrigW, finalOrigH, decodeMs, totalMs, "native_cluster_180");
                                     if (!baseBmp.isRecycled()) baseBmp.recycle();
                                     return;
                                 }
 
-                                // 3. Prehod: Nativni pametni izrez besedilnega grozda (Smart Cluster Crop)
-                                java.util.List<com.google.mlkit.vision.text.Text.TextBlock> blocks = (res0 != null) ? res0.getTextBlocks() : null;
-                                if (blocks != null && !blocks.isEmpty()) {
-                                    android.graphics.Rect cropBox = WarehouseLabelHelper.computeSmartClusterCrop(blocks, baseBmp.getWidth(), baseBmp.getHeight());
-                                    if (cropBox != null && cropBox.width() > 60 && cropBox.height() > 40) {
-                                        Bitmap cropped = Bitmap.createBitmap(baseBmp, cropBox.left, cropBox.top, cropBox.width(), cropBox.height());
-                                        InputImage imgCrop = InputImage.fromBitmap(cropped, 0);
-                                        getRecognizer().process(imgCrop)
-                                            .addOnSuccessListener(resCrop -> {
-                                                String txtCrop = (resCrop != null) ? resCrop.getText() : "";
-                                                WarehouseScanResult scanCrop = WarehouseLabelHelper.parseWarehouseText(txtCrop);
-                                                long totalMs = System.currentTimeMillis() - startTime;
+                                // 3. Prehod: 90 stopinj (pokončne škatle na paletah)
+                                try {
+                                    InputImage img90 = InputImage.fromBitmap(baseBmp, 90);
+                                    getRecognizer().process(img90)
+                                        .addOnSuccessListener(res90 -> {
+                                            String txt90 = (res90 != null) ? res90.getText() : "";
+                                            WarehouseScanResult scan90 = WarehouseLabelHelper.findBestBoxCandidate(
+                                                res90 != null ? res90.getTextBlocks() : null, baseBmp.getHeight(), baseBmp.getWidth(), txt90);
 
-                                                if (scanCrop != null && (scanCrop.primarySku != null || scanCrop.secondarySku != null || scanCrop.barcode != null)) {
-                                                    sendOptimizedResult(call, scanCrop, txtCrop, resCrop.getTextBlocks(), cropped.getWidth(), cropped.getHeight(), finalOrigW, finalOrigH, decodeMs, totalMs, "native_cluster_crop");
-                                                } else {
-                                                    sendOptimizedFallback(call, txt0, res0.getTextBlocks(), totalMs);
+                                            if (scan90 != null && (scan90.primarySku != null || scan90.secondarySku != null || scan90.barcode != null)) {
+                                                long totalMs = System.currentTimeMillis() - startTime;
+                                                sendOptimizedResult(call, scan90, txt90, res90.getTextBlocks(), baseBmp.getWidth(), baseBmp.getHeight(), finalOrigW, finalOrigH, decodeMs, totalMs, "native_cluster_90");
+                                                if (!baseBmp.isRecycled()) baseBmp.recycle();
+                                                return;
+                                            }
+
+                                            // 4. Prehod: Nativni pametni izrez besedilnega grozda (Smart Cluster Crop)
+                                            java.util.List<com.google.mlkit.vision.text.Text.TextBlock> blocks = (res0 != null) ? res0.getTextBlocks() : null;
+                                            if (blocks != null && !blocks.isEmpty()) {
+                                                android.graphics.Rect cropBox = WarehouseLabelHelper.computeSmartClusterCrop(blocks, baseBmp.getWidth(), baseBmp.getHeight());
+                                                if (cropBox != null && cropBox.width() > 60 && cropBox.height() > 40) {
+                                                    Bitmap cropped = Bitmap.createBitmap(baseBmp, cropBox.left, cropBox.top, cropBox.width(), cropBox.height());
+                                                    InputImage imgCrop = InputImage.fromBitmap(cropped, 0);
+                                                    getRecognizer().process(imgCrop)
+                                                        .addOnSuccessListener(resCrop -> {
+                                                            String txtCrop = (resCrop != null) ? resCrop.getText() : "";
+                                                            WarehouseScanResult scanCrop = WarehouseLabelHelper.findBestBoxCandidate(
+                                                                resCrop != null ? resCrop.getTextBlocks() : null, cropped.getWidth(), cropped.getHeight(), txtCrop);
+                                                            long totalMs = System.currentTimeMillis() - startTime;
+
+                                                            if (scanCrop != null && (scanCrop.primarySku != null || scanCrop.secondarySku != null || scanCrop.barcode != null)) {
+                                                                sendOptimizedResult(call, scanCrop, txtCrop, resCrop.getTextBlocks(), cropped.getWidth(), cropped.getHeight(), finalOrigW, finalOrigH, decodeMs, totalMs, "native_cluster_crop");
+                                                            } else {
+                                                                sendOptimizedFallback(call, txt0, res0.getTextBlocks(), totalMs);
+                                                            }
+                                                            if (!cropped.isRecycled()) cropped.recycle();
+                                                            if (!baseBmp.isRecycled()) baseBmp.recycle();
+                                                        })
+                                                        .addOnFailureListener(e -> {
+                                                            long totalMs = System.currentTimeMillis() - startTime;
+                                                            sendOptimizedFallback(call, txt0, res0.getTextBlocks(), totalMs);
+                                                            if (!cropped.isRecycled()) cropped.recycle();
+                                                            if (!baseBmp.isRecycled()) baseBmp.recycle();
+                                                        });
+                                                    return;
                                                 }
-                                                if (!cropped.isRecycled()) cropped.recycle();
-                                                if (!baseBmp.isRecycled()) baseBmp.recycle();
-                                            })
-                                            .addOnFailureListener(e -> {
-                                                long totalMs = System.currentTimeMillis() - startTime;
-                                                sendOptimizedFallback(call, txt0, res0.getTextBlocks(), totalMs);
-                                                if (!cropped.isRecycled()) cropped.recycle();
-                                                if (!baseBmp.isRecycled()) baseBmp.recycle();
-                                            });
-                                        return;
-                                    }
-                                }
+                                            }
 
-                                long totalMs = System.currentTimeMillis() - startTime;
-                                sendOptimizedFallback(call, txt0, res0 != null ? res0.getTextBlocks() : null, totalMs);
-                                if (!baseBmp.isRecycled()) baseBmp.recycle();
+                                            long totalMs = System.currentTimeMillis() - startTime;
+                                            sendOptimizedFallback(call, txt0, res0 != null ? res0.getTextBlocks() : null, totalMs);
+                                            if (!baseBmp.isRecycled()) baseBmp.recycle();
+                                        })
+                                        .addOnFailureListener(e90 -> {
+                                            long totalMs = System.currentTimeMillis() - startTime;
+                                            sendOptimizedFallback(call, txt0, res0 != null ? res0.getTextBlocks() : null, totalMs);
+                                            if (!baseBmp.isRecycled()) baseBmp.recycle();
+                                        });
+                                } catch (Exception e90) {
+                                    long totalMs = System.currentTimeMillis() - startTime;
+                                    sendOptimizedFallback(call, txt0, res0 != null ? res0.getTextBlocks() : null, totalMs);
+                                    if (!baseBmp.isRecycled()) baseBmp.recycle();
+                                }
                             })
                             .addOnFailureListener(e -> {
                                 long totalMs = System.currentTimeMillis() - startTime;
@@ -704,10 +1148,49 @@ public class MainActivity extends BridgeActivity {
             ret.put("barcode", scanRes.barcode != null ? scanRes.barcode : "");
             ret.put("boxCurrent", scanRes.boxCurrent);
             ret.put("boxTotal", scanRes.boxTotal);
+            ret.put("name", scanRes.name != null ? scanRes.name : "");
             ret.put("text", text);
             ret.put("decodeMs", decodeMs);
             ret.put("totalTimeMs", totalMs);
             ret.put("mode", mode);
+
+            if (scanRes.boundingBox != null) {
+                JSObject b = new JSObject();
+                b.put("x", scanRes.boundingBox.left);
+                b.put("y", scanRes.boundingBox.top);
+                b.put("width", scanRes.boundingBox.width());
+                b.put("height", scanRes.boundingBox.height());
+                b.put("normCenterX", scanRes.normCenterX);
+                b.put("normCenterY", scanRes.normCenterY);
+                b.put("normWidth", scanRes.normWidth);
+                b.put("normHeight", scanRes.normHeight);
+                ret.put("boxRect", b);
+            }
+
+            if (scanRes.otherBoxes != null && !scanRes.otherBoxes.isEmpty()) {
+                com.getcapacitor.JSArray others = new com.getcapacitor.JSArray();
+                for (WarehouseScanResult ob : scanRes.otherBoxes) {
+                    JSObject o = new JSObject();
+                    String obSku = (ob.primarySku != null && !ob.primarySku.isEmpty()) ? ob.primarySku : 
+                                   (ob.secondarySku != null && !ob.secondarySku.isEmpty() ? ob.secondarySku : ob.barcode);
+                    o.put("sku", obSku != null ? obSku : "");
+                    o.put("primarySku", ob.primarySku != null ? ob.primarySku : "");
+                    o.put("secondarySku", ob.secondarySku != null ? ob.secondarySku : "");
+                    o.put("boxCurrent", ob.boxCurrent);
+                    o.put("boxTotal", ob.boxTotal);
+                    o.put("score", ob.score);
+                    if (ob.boundingBox != null) {
+                        JSObject b = new JSObject();
+                        b.put("normCenterX", ob.normCenterX);
+                        b.put("normCenterY", ob.normCenterY);
+                        b.put("normWidth", ob.normWidth);
+                        b.put("normHeight", ob.normHeight);
+                        o.put("boxRect", b);
+                    }
+                    others.put(o);
+                }
+                ret.put("otherBoxes", others);
+            }
 
             boolean includeBlocks = call.getBoolean("includeBlocks", false);
             if (includeBlocks && blocks != null) {
@@ -1348,15 +1831,18 @@ public class MainActivity extends BridgeActivity {
                                         }
                                     }
 
-                                    // 2. OCR na 0 stopinj (standardna usmeritev)
+                                    // 2. OCR na 0 stopinj s prostorskim ločevanjem škatel (Spatial Clustering)
                                     textRecognizer.process(image0)
                                         .addOnSuccessListener(visionText -> {
-                                            WarehouseScanResult res0 = (visionText != null) ? WarehouseLabelHelper.parseWarehouseText(visionText.getText()) : null;
-                                            if (res0 != null) {
+                                            WarehouseScanResult res0 = WarehouseLabelHelper.findBestBoxCandidate(
+                                                visionText != null ? visionText.getTextBlocks() : null, 
+                                                imageProxy.getWidth(), imageProxy.getHeight(), 
+                                                visionText != null ? visionText.getText() : "");
+                                            if (res0 != null && (res0.primarySku != null || res0.secondarySku != null || res0.barcode != null)) {
                                                 lastScanTime = System.currentTimeMillis();
                                                 String bestVal = (res0.primarySku != null && !res0.primarySku.isEmpty()) ? res0.primarySku : 
                                                                  (res0.secondarySku != null && !res0.secondarySku.isEmpty() ? res0.secondarySku : res0.barcode);
-                                                handleScanSuccess(bestVal, res0.primarySku != null ? res0.primarySku : "", res0.secondarySku != null ? res0.secondarySku : "", res0.boxCurrent, res0.boxTotal, "ocr", 0);
+                                                handleScanSuccess(bestVal, res0.primarySku != null ? res0.primarySku : "", res0.secondarySku != null ? res0.secondarySku : "", res0.boxCurrent, res0.boxTotal, "ocr", 0, res0);
                                                 imageProxy.close();
                                             } else {
                                                 // 3. OCR na 180 stopinj (obratne škatle na paletah / policah)
@@ -1364,15 +1850,40 @@ public class MainActivity extends BridgeActivity {
                                                     InputImage image180 = InputImage.fromMediaImage(mediaImage, (rotationDegrees + 180) % 360);
                                                     textRecognizer.process(image180)
                                                         .addOnSuccessListener(invText -> {
-                                                            WarehouseScanResult res180 = (invText != null) ? WarehouseLabelHelper.parseWarehouseText(invText.getText()) : null;
-                                                            if (res180 != null) {
+                                                            WarehouseScanResult res180 = WarehouseLabelHelper.findBestBoxCandidate(
+                                                                invText != null ? invText.getTextBlocks() : null, 
+                                                                imageProxy.getWidth(), imageProxy.getHeight(), 
+                                                                invText != null ? invText.getText() : "");
+                                                            if (res180 != null && (res180.primarySku != null || res180.secondarySku != null || res180.barcode != null)) {
                                                                 lastScanTime = System.currentTimeMillis();
                                                                 String bestVal = (res180.primarySku != null && !res180.primarySku.isEmpty()) ? res180.primarySku : 
                                                                                  (res180.secondarySku != null && !res180.secondarySku.isEmpty() ? res180.secondarySku : res180.barcode);
-                                                                handleScanSuccess(bestVal, res180.primarySku != null ? res180.primarySku : "", res180.secondarySku != null ? res180.secondarySku : "", res180.boxCurrent, res180.boxTotal, "ocr_180", 0);
+                                                                handleScanSuccess(bestVal, res180.primarySku != null ? res180.primarySku : "", res180.secondarySku != null ? res180.secondarySku : "", res180.boxCurrent, res180.boxTotal, "ocr_180", 0, res180);
+                                                                imageProxy.close();
+                                                            } else {
+                                                                // 4. OCR na 90 stopinj (pokončne škatle na paletah)
+                                                                try {
+                                                                    InputImage image90 = InputImage.fromMediaImage(mediaImage, (rotationDegrees + 90) % 360);
+                                                                    textRecognizer.process(image90)
+                                                                        .addOnSuccessListener(vText -> {
+                                                                            WarehouseScanResult res90 = WarehouseLabelHelper.findBestBoxCandidate(
+                                                                                vText != null ? vText.getTextBlocks() : null, 
+                                                                                imageProxy.getHeight(), imageProxy.getWidth(), 
+                                                                                vText != null ? vText.getText() : "");
+                                                                            if (res90 != null && (res90.primarySku != null || res90.secondarySku != null || res90.barcode != null)) {
+                                                                                lastScanTime = System.currentTimeMillis();
+                                                                                String bestVal = (res90.primarySku != null && !res90.primarySku.isEmpty()) ? res90.primarySku : 
+                                                                                                 (res90.secondarySku != null && !res90.secondarySku.isEmpty() ? res90.secondarySku : res90.barcode);
+                                                                                handleScanSuccess(bestVal, res90.primarySku != null ? res90.primarySku : "", res90.secondarySku != null ? res90.secondarySku : "", res90.boxCurrent, res90.boxTotal, "ocr_90", 0, res90);
+                                                                            }
+                                                                        })
+                                                                        .addOnCompleteListener(t -> imageProxy.close());
+                                                                } catch (Exception ex90) {
+                                                                    imageProxy.close();
+                                                                }
                                                             }
                                                         })
-                                                        .addOnCompleteListener(t -> imageProxy.close());
+                                                        .addOnFailureListener(e180 -> imageProxy.close());
                                                 } catch (Exception ex) {
                                                     imageProxy.close();
                                                 }
@@ -1407,6 +1918,10 @@ public class MainActivity extends BridgeActivity {
         }
 
         private void handleScanSuccess(String code, String primary, String secondary, int boxCur, int boxTot, String type, int format) {
+            handleScanSuccess(code, primary, secondary, boxCur, boxTot, type, format, null);
+        }
+
+        private void handleScanSuccess(String code, String primary, String secondary, int boxCur, int boxTot, String type, int format, WarehouseScanResult scanRes) {
             // Zvočni pisk
             try {
                 android.media.ToneGenerator toneG = new android.media.ToneGenerator(android.media.AudioManager.STREAM_MUSIC, 100);
@@ -1432,8 +1947,35 @@ public class MainActivity extends BridgeActivity {
                 ret.put("secondarySku", secondary != null ? secondary : "");
                 ret.put("boxCurrent", boxCur);
                 ret.put("boxTotal", boxTot);
+                ret.put("name", scanRes != null && scanRes.name != null ? scanRes.name : "");
                 ret.put("type", type);
                 ret.put("format", format);
+
+                if (scanRes != null) {
+                    if (scanRes.boundingBox != null) {
+                        JSObject b = new JSObject();
+                        b.put("normCenterX", scanRes.normCenterX);
+                        b.put("normCenterY", scanRes.normCenterY);
+                        b.put("normWidth", scanRes.normWidth);
+                        b.put("normHeight", scanRes.normHeight);
+                        ret.put("boxRect", b);
+                    }
+                    if (scanRes.otherBoxes != null && !scanRes.otherBoxes.isEmpty()) {
+                        com.getcapacitor.JSArray others = new com.getcapacitor.JSArray();
+                        for (WarehouseScanResult ob : scanRes.otherBoxes) {
+                            JSObject o = new JSObject();
+                            String obSku = (ob.primarySku != null && !ob.primarySku.isEmpty()) ? ob.primarySku : 
+                                           (ob.secondarySku != null && !ob.secondarySku.isEmpty() ? ob.secondarySku : ob.barcode);
+                            o.put("sku", obSku != null ? obSku : "");
+                            o.put("primarySku", ob.primarySku != null ? ob.primarySku : "");
+                            o.put("secondarySku", ob.secondarySku != null ? ob.secondarySku : "");
+                            o.put("boxCurrent", ob.boxCurrent);
+                            o.put("boxTotal", ob.boxTotal);
+                            others.put(o);
+                        }
+                        ret.put("otherBoxes", others);
+                    }
+                }
 
                 if (savedCall != null) {
                     savedCall.resolve(ret);

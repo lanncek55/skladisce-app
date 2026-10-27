@@ -1217,6 +1217,345 @@ const DB = {
         shelf: 'Regal M-05',
         count: 5,
         notes: 'Klubske mizice'
+      },
+      {
+        sku: '3650044',
+        name: 'Pisarniška miza ASTRUP 60x120 črna',
+        category: 'Mize & Pisarna',
+        boxTotal: 1,
+        minQuantity: 2,
+        unit: 'kos',
+        shelf: 'Regal M-01',
+        count: 4,
+        notes: 'Desk ASTRUP 60x120 black'
+      },
+      {
+        sku: '3640447',
+        name: 'Miza MARSTRAND 50x100 hrast',
+        category: 'Mize & Pisarna',
+        boxTotal: 1,
+        minQuantity: 2,
+        unit: 'kos',
+        shelf: 'Regal M-03',
+        count: 3,
+        notes: 'Desk MARSTRAND 50x100 n.oak'
+      },
+      {
+        sku: '3690176',
+        name: 'Gaming miza LINDHOLM z LED črna',
+        category: 'Mize & Pisarna',
+        boxTotal: 1,
+        minQuantity: 2,
+        unit: 'kos',
+        shelf: 'Regal M-04',
+        count: 2,
+        notes: 'Gaming desk LINDHOLM w/LED black'
+      },
+      {
+        sku: '3630132',
+        name: 'Pisarniška miza LIMFJORDEN 60x120 beljen hrast',
+        category: 'Mize & Pisarna',
+        boxTotal: 2,
+        minQuantity: 2,
+        unit: 'garnitura',
+        shelf: 'Regal M-06',
+        count: 2,
+        boxes: [
+          { boxNum: 1, shelf: 'Regal M-06 (plošča)', count: 2 },
+          { boxNum: 2, shelf: 'Regal M-06 (predalnik)', count: 2 }
+        ],
+        notes: 'Desk LIMFJORDEN 60x120 4 draw. w.oak'
+      },
+      {
+        sku: '3601257',
+        name: 'Pisarniški stol TAMDRUP črna',
+        category: 'Pohištvo',
+        boxTotal: 1,
+        minQuantity: 2,
+        unit: 'kos',
+        shelf: 'Regal S-02',
+        count: 3,
+        notes: 'Office chair TAMDRUP black'
+      },
+      {
+        sku: '3699065',
+        name: 'Gaming stol ABILDAA antracit siva',
+        category: 'Pohištvo',
+        boxTotal: 1,
+        minQuantity: 1,
+        unit: 'kos',
+        shelf: 'Regal S-03',
+        count: 2,
+        notes: 'Gaming chair ABILDAA anthracite grey'
+      },
+      {
+        sku: '3601323',
+        name: 'Pisarniški stol BILLUM črna',
+        category: 'Pohištvo',
+        boxTotal: 1,
+        minQuantity: 2,
+        unit: 'kos',
+        shelf: 'Regal S-05',
+        count: 5,
+        notes: 'Office chair BILLUM black'
+      },
+      {
+        sku: '3650203',
+        name: 'Jedilna miza ALSTED Ø120 hrast',
+        category: 'Pohištvo',
+        boxTotal: 1,
+        minQuantity: 2,
+        unit: 'kos',
+        shelf: 'Regal J-01',
+        count: 2,
+        notes: 'Dining table ALSTED Ø120 n.oak'
+      },
+      {
+        sku: '3620225',
+        name: 'Jedilna garnitura BREDSTRUP',
+        category: 'Pohištvo',
+        boxTotal: 1,
+        minQuantity: 1,
+        unit: 'garnitura',
+        shelf: 'Regal J-02',
+        count: 1,
+        notes: 'BREDSTRUP L92 + 2 klopi'
+      },
+      {
+        sku: '3690498',
+        name: 'Jedilni stol KASTRUP črna/hrast',
+        category: 'Pohištvo',
+        boxTotal: 1,
+        minQuantity: 4,
+        unit: 'kos',
+        shelf: 'Regal J-03',
+        count: 6,
+        notes: 'Dining chair KASTRUP black/oak'
+      },
+      {
+        sku: '3670522',
+        name: 'Predalnik TANGE 6 predalov bela',
+        category: 'Pohištvo',
+        boxTotal: 2,
+        minQuantity: 2,
+        unit: 'garnitura',
+        shelf: 'Regal P-06',
+        count: 3,
+        boxes: [
+          { boxNum: 1, shelf: 'Regal P-06 (okvir)', count: 3 },
+          { boxNum: 2, shelf: 'Regal P-06 (predali)', count: 3 }
+        ],
+        notes: '6 drawer chest TANGE white'
+      },
+      {
+        sku: '3601026',
+        name: 'Komoda JENSLEV 2 vrata 4 predali hrast',
+        category: 'Pohištvo',
+        boxTotal: 2,
+        minQuantity: 1,
+        unit: 'garnitura',
+        shelf: 'Regal P-07',
+        count: 2,
+        boxes: [
+          { boxNum: 1, shelf: 'Regal P-07 (korpus)', count: 2 },
+          { boxNum: 2, shelf: 'Regal P-07 (vrata/predali)', count: 2 }
+        ],
+        notes: 'Sideboard JENSLEV 2 doors 4 drawers oak'
+      },
+      {
+        sku: '3659498',
+        name: 'Komoda TAPDRUP hrast',
+        category: 'Pohištvo',
+        boxTotal: 2,
+        minQuantity: 2,
+        unit: 'garnitura',
+        shelf: 'Regal P-08',
+        count: 4,
+        boxes: [
+          { boxNum: 1, shelf: 'Regal P-08 (ogrodje)', count: 4 },
+          { boxNum: 2, shelf: 'Regal P-08 (predali)', count: 4 }
+        ],
+        notes: 'TAPDRUP oak'
+      },
+      {
+        sku: '3659497',
+        name: 'Komoda TAPDRUP bela',
+        category: 'Pohištvo',
+        boxTotal: 2,
+        minQuantity: 2,
+        unit: 'garnitura',
+        shelf: 'Regal P-08',
+        count: 4,
+        boxes: [
+          { boxNum: 1, shelf: 'Regal P-08 (ogrodje)', count: 4 },
+          { boxNum: 2, shelf: 'Regal P-08 (predali)', count: 4 }
+        ],
+        notes: 'TAPDRUP white'
+      },
+      {
+        sku: '3670644',
+        name: 'Predalnik KORUP 1 predal 2 vrata bela',
+        category: 'Pohištvo',
+        boxTotal: 1,
+        minQuantity: 2,
+        unit: 'kos',
+        shelf: 'Regal P-10',
+        count: 2,
+        notes: 'COD KORUP 1 drawer 2 doors white'
+      },
+      {
+        sku: '3601401',
+        name: 'Predalnik JENSLEV 4 predali 1 vrata bela',
+        category: 'Pohištvo',
+        boxTotal: 1,
+        minQuantity: 2,
+        unit: 'kos',
+        shelf: 'Regal P-11',
+        count: 2,
+        notes: '4 drawer 1 door chest JENSLEV white'
+      },
+      {
+        sku: '3618939',
+        name: 'Predalnik LIMFJORDEN 4 predali bela',
+        category: 'Pohištvo',
+        boxTotal: 2,
+        minQuantity: 2,
+        unit: 'garnitura',
+        shelf: 'Regal P-05',
+        count: 3,
+        boxes: [
+          { boxNum: 1, shelf: 'Regal P-05 (ogrodje)', count: 3 },
+          { boxNum: 2, shelf: 'Regal P-05 (predali)', count: 3 }
+        ],
+        notes: 'COD LIMFJORDEN 4 drawers white'
+      },
+      {
+        sku: '3670318',
+        name: 'Zložljiv stol VIUF siva',
+        category: 'Stoli & Mize',
+        boxTotal: 1,
+        minQuantity: 4,
+        unit: 'kos',
+        shelf: 'Regal S-06',
+        count: 8,
+        notes: 'Folding chair VIUF grey'
+      },
+      {
+        sku: '3670064',
+        name: 'Omarica za nakit MALLING z ogledalom bela',
+        category: 'Pohištvo',
+        boxTotal: 1,
+        minQuantity: 2,
+        unit: 'kos',
+        shelf: 'Regal O-01',
+        count: 3,
+        notes: 'Jewellery cabinet MALLING w/mirror white'
+      },
+      {
+        sku: '3601337',
+        name: 'Pisarniška miza STAUNING 80x160 bela',
+        category: 'Mize & Pisarna',
+        boxTotal: 2,
+        minQuantity: 1,
+        unit: 'garnitura',
+        shelf: 'Regal M-07',
+        count: 2,
+        boxes: [
+          { boxNum: 1, shelf: 'Regal M-07 (mizna plošča)', count: 2 },
+          { boxNum: 2, shelf: 'Regal M-07 (noge/ogrodje)', count: 2 }
+        ],
+        notes: 'Desk STAUNING 80x160 white'
+      },
+      {
+        sku: '3681951',
+        name: 'Posteljni okvir BILLUND 90x200 bela/beton',
+        category: 'Vzmetnice & Nadvložki',
+        boxTotal: 2,
+        minQuantity: 1,
+        unit: 'garnitura',
+        shelf: 'Regal P-03',
+        count: 2,
+        boxes: [
+          { boxNum: 1, shelf: 'Regal P-03 (vzglavje)', count: 2 },
+          { boxNum: 2, shelf: 'Regal P-03 (stranice)', count: 2 }
+        ],
+        notes: 'Bed frame BILLUND 90x200 white/concrete'
+      },
+      {
+        sku: '3670214',
+        name: 'Garderobna omara LIMFJORDEN 120x200 bela',
+        category: 'Pohištvo',
+        boxTotal: 4,
+        minQuantity: 1,
+        unit: 'garnitura',
+        shelf: 'Regal G-04',
+        count: 2,
+        boxes: [
+          { boxNum: 1, shelf: 'Regal G-04 (ogrodje)', count: 2 },
+          { boxNum: 2, shelf: 'Regal G-04 (police)', count: 2 },
+          { boxNum: 3, shelf: 'Regal G-04 (vrata)', count: 2 },
+          { boxNum: 4, shelf: 'Regal G-04 (predali)', count: 2 }
+        ],
+        notes: 'Wardrobe LIMFJORDEN combi 120x200 white'
+      },
+      {
+        sku: '3670545',
+        name: 'Ogledalo ENGLERUP z 12 LED bela',
+        category: 'Pohištvo',
+        boxTotal: 1,
+        minQuantity: 2,
+        unit: 'kos',
+        shelf: 'Regal O-02',
+        count: 4,
+        notes: 'Mirror ENGLERUP w/12 LED light bulbs white'
+      },
+      {
+        sku: '3601174',
+        name: 'Klubska mizica AGERBY 60x100 steklo/hrast',
+        category: 'Pohištvo',
+        boxTotal: 2,
+        minQuantity: 1,
+        unit: 'garnitura',
+        shelf: 'Regal M-08',
+        count: 2,
+        boxes: [
+          { boxNum: 1, shelf: 'Regal M-08 (steklo)', count: 2 },
+          { boxNum: 2, shelf: 'Regal M-08 (leseni podstavek)', count: 2 }
+        ],
+        notes: 'Coffee table AGERBY 60x100 glass/oak'
+      },
+      {
+        sku: '3610137',
+        name: 'Klubska mizica LYNGS Ø59 hrast',
+        category: 'Pohištvo',
+        boxTotal: 1,
+        minQuantity: 2,
+        unit: 'kos',
+        shelf: 'Regal M-09',
+        count: 3,
+        notes: 'Coffee table LYNGS Ø59 w.oak'
+      },
+      {
+        sku: '3650192',
+        name: 'Vložek za omaro BARKHOLT 4 žične košare',
+        category: 'Pohištvo',
+        boxTotal: 1,
+        minQuantity: 2,
+        unit: 'kos',
+        shelf: 'Regal G-05',
+        count: 5,
+        notes: 'Wardrobe insert BARKHOLT W42xD45 4 wire'
+      },
+      {
+        sku: '3640200',
+        name: 'Fotelj HVILSTED z naslonom za noge umazano bela',
+        category: 'Pohištvo',
+        boxTotal: 1,
+        minQuantity: 1,
+        unit: 'garnitura',
+        shelf: 'Regal F-01',
+        count: 2,
+        notes: 'Armchair/footstool HVILSTED off-white'
       }
     ];
 
@@ -1280,7 +1619,7 @@ const DB = {
   },
 
   async ensureReceiptDemoItems() {
-    const requiredSKUs = ['3618930', '3670619', '3601370', '3600634', '3680079', '3600628'];
+    const requiredSKUs = ['3618930', '3670619', '3601370', '3600634', '3680079', '3600628', '3650044', '3640447', '3690176'];
     for (const sku of requiredSKUs) {
       const item = await this.getItemBySKU(sku);
       if (!item) {
